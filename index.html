@@ -108,6 +108,10 @@
           <i data-lucide="bot" class="w-4 h-4"></i><span class="nav-text">Agent 对话</span>
           <span class="ml-auto pill pill-sky nav-badge">Local</span>
         </a>
+        <a class="nav-item flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm" data-page="my" data-action="gotoPage">
+          <i data-lucide="user-circle" class="w-4 h-4"></i><span class="nav-text">我的</span>
+          <span class="ml-auto pill pill-brand nav-badge">New</span>
+        </a>
         <div class="px-2 py-1.5 text-[10px] uppercase tracking-wider text-gray-500 mt-4 nav-group-label">系统</div>
         <a class="nav-item flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm" data-page="settings" data-action="gotoPage">
           <i data-lucide="settings" class="w-4 h-4"></i><span class="nav-text">设置</span>
@@ -615,6 +619,9 @@
             <option value="轻松、口语化、有生活感">轻松口语</option>
             <option value="信息密度高、结构清楚">高信息密度</option>
           </select>
+          <select class="input py-1.5 text-xs" id="rewriteStyleProfile" style="width:auto" title="使用「我的」账号提炼的风格档案">
+            <option value="">（不使用风格档案）</option>
+          </select>
           <button class="btn btn-ghost py-1.5 text-xs" id="hotspotAnalyzeBtn" data-action="analyzeRewriteHotspots"><i data-lucide="trending-up" class="w-3.5 h-3.5"></i>分析可蹭热点</button>
           <button class="btn btn-ghost py-1.5 text-xs" data-action="openActionLogs"><i data-lucide="scroll-text" class="w-3.5 h-3.5"></i>调用日志</button>
           <button class="btn btn-primary py-1.5 text-xs ml-auto" data-action="doRewrite"><i data-lucide="wand-sparkles" class="w-3.5 h-3.5"></i>开始重构</button>
@@ -767,6 +774,26 @@
         </div>
       </div>
     </section>
+  </div>
+</div>
+</template>
+
+<template id="tpl-my">
+<div class="p-6 space-y-5">
+  <div class="page-header">
+    <div>
+      <div class="page-header-title"><i data-lucide="user-circle" class="w-5 h-5 text-purple-400"></i>我的</div>
+      <div class="page-header-sub" id="my-sub">管理个人账号、提炼赛道与创作风格档案</div>
+    </div>
+    <div class="page-header-actions">
+      <button class="btn btn-primary" data-action="addMyAccount"><i data-lucide="plus" class="w-4 h-4"></i>添加我的账号</button>
+    </div>
+  </div>
+  <div id="my-account-list" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
+  <div id="my-empty" class="hidden text-center py-16 text-gray-500">
+    <i data-lucide="user-plus" class="w-12 h-12 mx-auto mb-3 opacity-30"></i>
+    <div>还没有添加个人账号</div>
+    <p class="text-xs text-gray-600 mt-2">点击「添加我的账号」开始</p>
   </div>
 </div>
 </template>

@@ -29,6 +29,29 @@ export function renderCreator() {
     sourceEl.classList.add('hidden');
   }
   initIcons(document.getElementById('content-area'));
+  loadStyleProfiles();
+}
+
+async function loadStyleProfiles() {
+  const sel = document.getElementById('rewriteStyleProfile');
+  if (!sel) return;
+  try {
+    const accounts = await localApi('my-accounts');
+    const withProfile = accounts.filter(a => a.styleProfile);
+    const current = sel.value;
+    sel.innerHTML = '<option value="">（不使用风格档案）</option>' +
+      withProfile.map(a => `<option value="${esc(a.id)}">${esc(a.name)}（${platName(a.plat)}）</option>`).join('');
+    if (current) sel.value = current;
+  } catch {}
+}
+
+async function getSelectedStyleProfile() {
+  const id = document.getElementById('rewriteStyleProfile')?.value;
+  if (!id) return null;
+  try {
+    const accounts = await localApi('my-accounts');
+    return accounts.find(a => a.id === id)?.styleProfile || null;
+  } catch { return null; }
 }
 
 export function clearCreatorSource() {
@@ -202,6 +225,7 @@ export async function doRewrite() {
   document.getElementById('rewriteIntro').value = '正在生成前言…';
   resultEl.value = '正在调用 LLM 重构内容…';
   try {
+    const styleProfile = await getSelectedStyleProfile();
     const result = await localApi('rewrite', {
       method: 'POST',
       body: {
@@ -209,6 +233,7 @@ export async function doRewrite() {
         platform: document.getElementById('rewritePlatform').value,
         tone: document.getElementById('rewriteTone').value,
         hotspot: selectedRewriteHotspot,
+        styleProfile,
       },
     });
     document.getElementById('rewriteTitle').value = result.title || '';

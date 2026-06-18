@@ -509,6 +509,31 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_local_data_module ON local_data(module);
 
+  CREATE TABLE IF NOT EXISTS my_accounts (
+    id TEXT PRIMARY KEY,
+    tracker_id TEXT,
+    name TEXT NOT NULL,
+    plat TEXT NOT NULL,
+    avatar TEXT,
+    tracks TEXT,
+    style_profile TEXT,
+    style_source TEXT,
+    style_source_ref TEXT,
+    style_updated_at INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS style_templates (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    platform TEXT,
+    template TEXT NOT NULL,
+    is_default INTEGER DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
     username TEXT NOT NULL COLLATE NOCASE UNIQUE,
@@ -948,6 +973,188 @@ async function prefetchWersssContent() {
     tx();
   }
   return { total: pending.length, done, failed };
+}
+
+// ============ 我的账号 + 风格档案 ============
+function listMyAccounts() {
+  return db.prepare('SELECT * FROM my_accounts ORDER BY created_at DESC').all().map(rowToMyAccount);
+}
+
+function getMyAccount(id) {
+  const row = db.prepare('SELECT * FROM my_accounts WHERE id = ?').get(id);
+  return row ? rowToMyAccount(row) : null;
+}
+
+function rowToMyAccount(row) {
+  if (!row) return null;
+  const tracks = parseJson(row.tracks);
+  const profile = parseJson(row.style_profile);
+  return {
+    id: row.id,
+    trackerId: row.tracker_id,
+    name: row.name,
+    plat: row.plat,
+    avatar: row.avatar,
+    tracks: Array.isArray(tracks) ? tracks : [],
+    styleProfile: (profile && typeof profile === 'object' && Object.keys(profile).length) ? profile : null,
+    styleSource: row.style_source || '',
+    styleSourceRef: row.style_source_ref || '',
+    styleUpdatedAt: row.style_updated_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function saveMyAccount(data) {
+  const id = String(data.id || `my:${data.plat}:${data.name}:${Date.now()}`);
+  const now = Date.now();
+  const existing = db.prepare('SELECT * FROM my_accounts WHERE id = ?').get(id);
+  db.prepare(`
+    INSERT INTO my_accounts (id, tracker_id, name, plat, avatar, tracks, style_profile, style_source, style_source_ref, style_updated_at, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      tracker_id = COALESCE(excluded.tracker_id, my_accounts.tracker_id),
+      name = excluded.name,
+      plat = excluded.plat,
+      avatar = COALESCE(excluded.avatar, my_accounts.avatar),
+      tracks = COALESCE(excluded.tracks, my_accounts.tracks),
+      style_profile = COALESCE(excluded.style_profile, my_accounts.style_profile),
+      style_source = COALESCE(excluded.style_source, my_accounts.style_source),
+      style_source_ref = COALESCE(excluded.style_source_ref, my_accounts.style_source_ref),
+      style_updated_at = COALESCE(excluded.style_updated_at, my_accounts.style_updated_at),
+      updated_at = excluded.updated_at
+  `).run(
+    id,
+    data.trackerId || existing?.tracker_id || null,
+    String(data.name || '').trim(),
+    String(data.plat || ''),
+    data.avatar || existing?.avatar || null,
+    data.tracks ? JSON.stringify(data.tracks) : (existing?.tracks || null),
+    data.styleProfile ? JSON.stringify(data.styleProfile) : (existing?.style_profile || null),
+    data.styleSource || existing?.style_source || null,
+    data.styleSourceRef || existing?.style_source_ref || null,
+    data.styleUpdatedAt || existing?.style_updated_at || null,
+    existing?.created_at || now,
+    now
+  );
+  return getMyAccount(id);
+}
+
+// 收集账号的风采素材（标题列表 + 正文片段 + 标签）
+async function collectAccountSamples(account) {
+  const samples = { titles: [], contents: [], tags: [], sourceDesc: '' };
+  // 来源 1：tracked_accounts 里的作品（RedFox 抓取过）
+  if (account.trackerId) {
+    const works = db.prepare(`SELECT work_data FROM account_works WHERE account_id = ? ORDER BY publish_at DESC LIMIT 20`).all(account.trackerId);
+    for (const w of works) {
+      const data = parseJson(w.work_data);
+      if (!data) continue;
+      if (data.title) samples.titles.push(data.title);
+      if (data.summary || data.desc) samples.titles.push(data.summary || data.desc);
+    }
+    samples.sourceDesc = `RedFox ${works.length} 篇作品`;
+  }
+  // 来源 2：知识库条目（style_source_ref 是 entry_key 列表）
+  if (account.styleSourceRef) {
+    const keys = account.styleSourceRef.split(',').map(s => s.trim()).filter(Boolean);
+    const cfg = db.prepare('SELECT * FROM kb_config WHERE source_type = ?').get('current');
+    if (cfg && keys.length) {
+      for (const key of keys.slice(0, 5)) {
+        try {
+          if (cfg.provider === 'notion' || (cfg.notion_api_key && cfg.notion_database_id)) {
+            const apiKey = decryptKb(cfg.notion_api_key);
+            const page = await getPage(apiKey, key);
+            if (page?.title) samples.titles.push(page.title);
+            if (page?.content) samples.contents.push(page.content.slice(0, 1500));
+          } else if (cfg.source_path) {
+            const entry = readEntry(cfg.source_path, key);
+            if (entry?.title) samples.titles.push(entry.title);
+            if (entry?.content) samples.contents.push(entry.content.slice(0, 1500));
+            if (entry?.tags?.length) samples.tags.push(...entry.tags);
+          }
+        } catch (e) {
+          console.warn(`[my-account] 读知识库条目 ${key} 失败:`, e.message);
+        }
+      }
+      samples.sourceDesc += (samples.sourceDesc ? ' + ' : '') + `知识库 ${keys.length} 条`;
+    }
+  }
+  return samples;
+}
+
+// LLM 提炼赛道（基于作品标题）
+async function extractAccountTracks(account) {
+  const samples = await collectAccountSamples(account);
+  if (!samples.titles.length) throw new Error('该账号暂无作品数据，请先在「账号追踪」同步或关联知识库条目');
+  const titles = samples.titles.slice(0, 30).map((t, i) => `${i + 1}. ${t}`).join('\n');
+  const messages = [
+    { role: 'system', content: '你是创作赛道分析师。基于账号的作品标题列表，提炼出 3-5 个赛道标签。赛道标签应当是简短的中文短语（如"AI 教程"、"NAS 玩法"、"情感共鸣"），反映此账号主要创作主题。返回 JSON 数组，每个元素是一个字符串。' },
+    { role: 'user', content: `账号名称：${account.name}（${account.plat}）\n\n作品标题：\n${titles}\n\n请提炼 3-5 个赛道标签，JSON 数组格式：["...", "..."]` },
+  ];
+  const result = await callLlmJson(messages);
+  const tracks = Array.isArray(result) ? result : (result?.tracks || result?.data || []);
+  return tracks.slice(0, 5).map(t => String(t).trim()).filter(Boolean);
+}
+
+// LLM 提炼风格档案（基于作品 + 已知赛道）
+async function extractAccountStyleProfile(account) {
+  const samples = await collectAccountSamples(account);
+  if (!samples.titles.length && !samples.contents.length) {
+    throw new Error('该账号暂无作品数据，无法提炼风格');
+  }
+  const titles = samples.titles.slice(0, 20).map((t, i) => `${i + 1}. ${t}`).join('\n');
+  const contents = samples.contents.slice(0, 3).map((c, i) => `--- 作品 ${i + 1} 正文片段 ---\n${c}`).join('\n\n');
+  const tracks = (account.tracks || []).join('、');
+  const messages = [
+    { role: 'system', content: '你是创作风格分析师。基于账号的作品素材，提炼出结构化的创作风格档案。返回严格 JSON 格式。' },
+    { role: 'user', content: `账号名称：${account.name}（${account.plat}）
+已知赛道：${tracks || '未提炼'}
+
+【作品标题列表】
+${titles}
+
+【作品正文片段】
+${contents || '（无）'}
+
+【已知标签】
+${samples.tags.slice(0, 20).join('、') || '（无）'}
+
+请输出严格 JSON，结构如下：
+{
+  "创作心智": {"核心议题": ["..."], "独特视角": "...", "避免话题": ["..."]},
+  "标题DNA": {"典型句式": ["..."], "数字偏好": "...", "情绪钩子": "..."},
+  "表达风格": {"句式": "...", "词汇偏好": "...", "节奏": "...", "幽默度": "..."},
+  "创作边界": ["..."],
+  "诚实边界": "基于 N 篇作品提炼，不覆盖最新偏好"
+}` },
+  ];
+  return await callLlmJson(messages);
+}
+
+// 基于赛道 + 热点生成预设选题
+async function generatePresetInspirations(account) {
+  const tracks = account.tracks || [];
+  if (!tracks.length) throw new Error('请先提炼赛道');
+  const keywordsRow = db.prepare(`SELECT data_json FROM local_data WHERE module = 'hot' AND data_key = 'keywords'`).get();
+  let hotKeywords = [];
+  if (keywordsRow) {
+    try {
+      const data = parseJson(keywordsRow.data_json);
+      hotKeywords = (data?.keywords || data?.items || []).slice(0, 20).map(k => typeof k === 'string' ? k : (k.keyword || k.title || ''));
+    } catch {}
+  }
+  const messages = [
+    { role: 'system', content: '你是自媒体选题策划师。基于用户的赛道标签和当前热点关键词，生成 5-8 个预设选题主题。每个选题包含标题、角度、目标平台。返回 JSON 数组。' },
+    { role: 'user', content: `我的赛道：${tracks.join('、')}
+
+当前热点关键词：
+${hotKeywords.join('、') || '（暂无热点数据）'}
+
+请基于我的赛道 ∩ 当前热点，生成 5-8 个适合的选题。严格 JSON 数组格式：
+[{"title": "...", "angle": "...", "platform": "dy|xhs|gzh|all"}]` },
+  ];
+  const result = await callLlmJson(messages);
+  return Array.isArray(result) ? result : (result?.data || result?.items || []);
 }
 
 function publicUser(row) {
@@ -3216,10 +3423,24 @@ async function rewriteForPlatform(body) {
   const hotspotInstruction = hotspot?.title
     ? `选定热点：${hotspot.title}（${hotspot.platformName}）。可用关联角度：${hotspot.angle || '自行判断'}。热点主要用于标题和前言，正文不得为了关联而篡改原文事实；若关联牵强，应在标题和前言中弱化处理。`
     : '未选择热点，不要虚构或强行加入热点。';
+  // 风格档案（来自「我的」账号）
+  let styleInstruction = '';
+  if (body.styleProfile && typeof body.styleProfile === 'object') {
+    const p = body.styleProfile;
+    const bits = [];
+    if (p['标题DNA']?.典型句式?.length) bits.push(`标题参考句式：${p['标题DNA'].典型句式.slice(0, 3).join('；')}`);
+    if (p['标题DNA']?.情绪钩子) bits.push(`标题情绪钩子：${p['标题DNA'].情绪钩子}`);
+    if (p['表达风格']?.句式) bits.push(`句式偏好：${p['表达风格'].句式}`);
+    if (p['表达风格']?.词汇偏好) bits.push(`词汇偏好：${p['表达风格'].词汇偏好}`);
+    if (p['表达风格']?.节奏) bits.push(`节奏：${p['表达风格'].节奏}`);
+    if (p['表达风格']?.幽默度) bits.push(`幽默度：${p['表达风格'].幽默度}`);
+    if (p['创作边界']?.length) bits.push(`避免：${p['创作边界'].join('、')}`);
+    if (bits.length) styleInstruction = `\n\n参考风格档案（仅作为风格指引，不得编造新事实）：\n${bits.join('\n')}`;
+  }
   const result = await callLlmJson([
     {
       role: 'system',
-      content: `你是中文自媒体编辑。将素材重构为${platform}内容，风格：${tone}。只能改写原始素材和所选热点明确提供的信息，不得补充原文没有的功能细节、原因、监管结论、时间表、数据或品牌案例；素材较短时正文也应保持简短。热点只用于标题和前言的自然切入，不能借热点编造正文事实。输出严格 JSON：{"title":"","intro":"","content":""}。title 是成稿标题，intro 是独立前言，content 是不重复标题和前言的正文。`,
+      content: `你是中文自媒体编辑。将素材重构为${platform}内容，风格：${tone}。只能改写原始素材和所选热点明确提供的信息，不得补充原文没有的功能细节、原因、监管结论、时间表、数据或品牌案例；素材较短时正文也应保持简短。热点只用于标题和前言的自然切入，不能借热点编造正文事实。输出严格 JSON：{"title":"","intro":"","content":""}。title 是成稿标题，intro 是独立前言，content 是不重复标题和前言的正文。${styleInstruction}`,
     },
     {
       role: 'user',
@@ -5908,6 +6129,102 @@ ${keywordsList}
       id: r.id, mpId: r.mp_id, mpName: r.mp_name, title: r.title, summary: r.summary,
       url: r.url, cover: r.cover, publishTime: r.publish_time, syncedAt: r.synced_at,
     })) });
+    return true;
+  }
+
+  // ========== 我的账号 + 风格档案 ==========
+  // GET /api/_/my-accounts
+  if (url.pathname === '/api/_/my-accounts' && req.method === 'GET') {
+    json(res, 200, { ok: true, data: listMyAccounts() });
+    return true;
+  }
+  // POST /api/_/my-accounts（新建/更新）
+  if (url.pathname === '/api/_/my-accounts' && req.method === 'POST') {
+    const { data } = await readBody(req);
+    if (!data.name || !data.plat) { json(res, 400, { ok: false, error: 'name 和 plat 必填' }); return true; }
+    const saved = saveMyAccount(data);
+    json(res, 200, { ok: true, data: saved });
+    return true;
+  }
+  // DELETE /api/_/my-accounts/{id}
+  const myAccDelMatch = url.pathname.match(/^\/api\/_\/my-accounts\/([^/]+)$/);
+  if (myAccDelMatch && req.method === 'DELETE') {
+    const id = decodeURIComponent(myAccDelMatch[1]);
+    db.prepare('DELETE FROM my_accounts WHERE id = ?').run(id);
+    json(res, 200, { ok: true });
+    return true;
+  }
+  // POST /api/_/my-accounts/{id}/extract-tracks
+  const extractTracksMatch = url.pathname.match(/^\/api\/_\/my-accounts\/([^/]+)\/extract-tracks$/);
+  if (extractTracksMatch && req.method === 'POST') {
+    const id = decodeURIComponent(extractTracksMatch[1]);
+    const account = getMyAccount(id);
+    if (!account) { json(res, 404, { ok: false, error: '账号不存在' }); return true; }
+    try {
+      const tracks = await extractAccountTracks(account);
+      const saved = saveMyAccount({ ...account, tracks });
+      json(res, 200, { ok: true, data: { tracks, account: saved } });
+    } catch (e) { json(res, 500, { ok: false, error: e.message }); }
+    return true;
+  }
+  // POST /api/_/my-accounts/{id}/extract-style
+  const extractStyleMatch = url.pathname.match(/^\/api\/_\/my-accounts\/([^/]+)\/extract-style$/);
+  if (extractStyleMatch && req.method === 'POST') {
+    const id = decodeURIComponent(extractStyleMatch[1]);
+    const account = getMyAccount(id);
+    if (!account) { json(res, 404, { ok: false, error: '账号不存在' }); return true; }
+    try {
+      const profile = await extractAccountStyleProfile(account);
+      const saved = saveMyAccount({ ...account, styleProfile: profile, styleUpdatedAt: Date.now() });
+      json(res, 200, { ok: true, data: { profile, account: saved } });
+    } catch (e) { json(res, 500, { ok: false, error: e.message }); }
+    return true;
+  }
+  // POST /api/_/my-accounts/{id}/preset-inspirations
+  const presetInspMatch = url.pathname.match(/^\/api\/_\/my-accounts\/([^/]+)\/preset-inspirations$/);
+  if (presetInspMatch && req.method === 'POST') {
+    const id = decodeURIComponent(presetInspMatch[1]);
+    const account = getMyAccount(id);
+    if (!account) { json(res, 404, { ok: false, error: '账号不存在' }); return true; }
+    try {
+      const ideas = await generatePresetInspirations(account);
+      json(res, 200, { ok: true, data: ideas });
+    } catch (e) { json(res, 500, { ok: false, error: e.message }); }
+    return true;
+  }
+
+  // ========== 创作提示词模板 ==========
+  // GET /api/_/style-templates
+  if (url.pathname === '/api/_/style-templates' && req.method === 'GET') {
+    const rows = db.prepare('SELECT * FROM style_templates ORDER BY is_default DESC, created_at DESC').all();
+    json(res, 200, { ok: true, data: rows.map(r => ({
+      id: r.id, name: r.name, platform: r.platform, template: r.template,
+      isDefault: Boolean(r.is_default), createdAt: r.created_at, updatedAt: r.updated_at,
+    })) });
+    return true;
+  }
+  // POST /api/_/style-templates
+  if (url.pathname === '/api/_/style-templates' && req.method === 'POST') {
+    const { data } = await readBody(req);
+    if (!data.name || !data.template) { json(res, 400, { ok: false, error: 'name 和 template 必填' }); return true; }
+    const id = data.id || `tpl:${Date.now()}`;
+    const now = Date.now();
+    db.prepare(`
+      INSERT INTO style_templates (id, name, platform, template, is_default, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        name = excluded.name, platform = excluded.platform, template = excluded.template,
+        is_default = excluded.is_default, updated_at = excluded.updated_at
+    `).run(id, String(data.name), String(data.platform || 'all'), String(data.template), data.isDefault ? 1 : 0, now, now);
+    json(res, 200, { ok: true, data: { id } });
+    return true;
+  }
+  // DELETE /api/_/style-templates/{id}
+  const styleTplDelMatch = url.pathname.match(/^\/api\/_\/style-templates\/([^/]+)$/);
+  if (styleTplDelMatch && req.method === 'DELETE') {
+    const id = decodeURIComponent(styleTplDelMatch[1]);
+    db.prepare('DELETE FROM style_templates WHERE id = ?').run(id);
+    json(res, 200, { ok: true });
     return true;
   }
 
