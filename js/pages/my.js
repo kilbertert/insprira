@@ -91,15 +91,14 @@ function renderAccountCard(a) {
 }
 
 export async function addMyAccount() {
-  kbSelectedKeys = new Set();
   const modal = document.createElement('div');
   modal.className = 'modal-mask';
-  modal.innerHTML = `<div class="modal" style="max-width:520px" data-action="stopPropagation">
-    <div class="flex items-center justify-between mb-4">
+  modal.innerHTML = `<div class="modal flex flex-col" style="max-width:520px;max-height:85vh" data-action="stopPropagation">
+    <div class="flex items-center justify-between mb-4 flex-shrink-0">
       <h2 class="text-lg font-bold">添加我的账号</h2>
       <button class="btn btn-ghost py-1 px-2" data-action="closeModal"><i data-lucide="x" class="w-4 h-4"></i></button>
     </div>
-    <div class="space-y-3">
+    <div class="space-y-3 overflow-y-auto scrollbar-thin pr-1 flex-1 min-h-0">
       <label class="block">
         <span class="text-xs text-gray-400">平台</span>
         <select class="input mt-1" id="my-add-plat">
@@ -131,16 +130,9 @@ export async function addMyAccount() {
               <option value="">（请先在「账号追踪」添加）</option>
             </select>
           </div>
-          <div id="my-add-source-kb" class="space-y-1.5 p-2 rounded-md bg-white/[0.02] hidden">
-            <div class="text-[11px] text-gray-500">从已配置的 Obsidian / Notion 知识库选条目（最多 5 个）</div>
-            <div class="relative">
-              <i data-lucide="search" class="w-3 h-3 absolute left-2 top-1/2 -translate-y-1/2 text-gray-500"></i>
-              <input class="input py-1 text-xs pl-7" id="my-add-kb-search" placeholder="搜索标题/标签/内容...">
-            </div>
-            <div id="my-add-kb-list" class="max-h-40 overflow-y-auto scrollbar-thin space-y-0.5 text-xs">
-              <div class="text-gray-500 text-center py-2">输入关键词搜索</div>
-            </div>
-            <div id="my-add-kb-selected" class="text-[10px] text-purple-300">已选 0 / 5</div>
+          <div id="my-add-source-kb" class="space-y-1 p-2 rounded-md bg-white/[0.02] hidden">
+            <div class="text-[11px] text-gray-500">使用已配置的 Obsidian + Notion 知识库作为风格源（自动读取全部条目）</div>
+            <div id="my-add-kb-status" class="text-[10px] text-gray-500">检查中…</div>
           </div>
         </div>
       </div>
@@ -161,81 +153,38 @@ export async function addMyAccount() {
     ).join('');
   } catch {}
   // 切换数据源时显示对应配置区
-  const syncSourceSections = () => {
+  const syncSourceSections = async () => {
     const checked = Array.from(modal.querySelectorAll('input[name="my-source"]:checked')).map(x => x.value);
     modal.querySelector('#my-add-source-redfox').classList.toggle('hidden', !checked.includes('redfox'));
     modal.querySelector('#my-add-source-kb').classList.toggle('hidden', !checked.includes('kb'));
-    if (checked.includes('kb') && !modal.dataset.kbLoaded) {
-      modal.dataset.kbLoaded = '1';
-      loadKbEntriesForPicker(modal);
+    if (checked.includes('kb') && !modal.dataset.kbStatusLoaded) {
+      modal.dataset.kbStatusLoaded = '1';
+      await loadKbStatus(modal);
     }
   };
   modal.querySelectorAll('input[name="my-source"]').forEach(r => r.addEventListener('change', syncSourceSections));
-  // 知识库搜索
-  const kbSearch = modal.querySelector('#my-add-kb-search');
-  if (kbSearch) {
-    let timer = null;
-    kbSearch.addEventListener('input', () => {
-      clearTimeout(timer);
-      timer = setTimeout(() => loadKbEntriesForPicker(modal, kbSearch.value.trim()), 300);
-    });
-  }
   syncSourceSections();
 }
 
-let kbSelectedKeys = new Set();
-const KB_PICK_LIMIT = 5;
-
-async function loadKbEntriesForPicker(modal, q = '') {
-  const list = modal.querySelector('#my-add-kb-list');
-  if (!list) return;
-  list.innerHTML = '<div class="text-gray-500 text-center py-2">加载中…</div>';
+async function loadKbStatus(modal) {
+  const el = modal.querySelector('#my-add-kb-status');
+  if (!el) return;
+  el.textContent = '检查中…';
   try {
-    // 同时尝试 obsidian 和 notion 两个源
-    const fetchOne = async (source) => {
-      try {
-        const params = new URLSearchParams({ source, limit: '30' });
-        if (q) params.set('q', q);
-        const r = await localApi(`kb/entries?${params.toString()}`);
-        const items = r?.entries || [];
-        return items.map(e => ({ source, key: e.entry_key || e.id, title: e.title || e.entry_key, folder: e.folder || '' }));
-      } catch { return []; }
-    };
-    const [obs, nt] = await Promise.all([fetchOne('obsidian'), fetchOne('notion')]);
-    const all = [...obs, ...nt];
-    if (!all.length) {
-      list.innerHTML = '<div class="text-gray-500 text-center py-2">未找到条目，请先在「知识库」配置源</div>';
-      return;
+    const cfg = await localApi('kb/config');
+    const obs = cfg.obsidian?.configured;
+    const nt = cfg.notion?.configured;
+    const parts = [];
+    if (obs) parts.push(`Obsidian（${cfg.obsidian.sourcePath || '已配置'}）`);
+    if (nt) parts.push(`Notion（database: ${cfg.notion.databaseId || '已配置'}）`);
+    if (parts.length) {
+      el.innerHTML = `<span class="text-emerald-300">✓ 已配置：</span> ${parts.join('、')}`;
+    } else {
+      el.innerHTML = `<span class="text-amber-400">⚠ 知识库尚未配置，请先到「知识库」页面配置 Obsidian 或 Notion</span>`;
     }
-    list.innerHTML = all.map(item => {
-      const checked = kbSelectedKeys.has(item.key);
-      const disabled = !checked && kbSelectedKeys.size >= KB_PICK_LIMIT;
-      return `<label class="flex items-center gap-1.5 p-1.5 rounded ${disabled ? 'opacity-40 pointer-events-none' : 'hover:bg-white/[0.04]'} cursor-pointer">
-        <input type="checkbox" class="kb-pick" value="${esc(item.key)}" data-title="${esc(item.title)}" ${checked ? 'checked' : ''}>
-        <span class="flex-1 truncate">${esc(item.title)}</span>
-        <span class="text-[9px] text-gray-600 flex-shrink-0">${item.source === 'notion' ? 'Notion' : 'Obsidian'}</span>
-      </label>`;
-    }).join('');
-    list.querySelectorAll('input.kb-pick').forEach(cb => {
-      cb.addEventListener('change', () => {
-        if (cb.checked) {
-          if (kbSelectedKeys.size >= KB_PICK_LIMIT) { cb.checked = false; return; }
-          kbSelectedKeys.add(cb.value);
-        } else {
-          kbSelectedKeys.delete(cb.value);
-        }
-        updateKbSelectedCount(modal);
-      });
-    });
-    updateKbSelectedCount(modal);
   } catch (e) {
-    list.innerHTML = `<div class="text-red-400 text-center py-2">${esc(e.message)}</div>`;
+    el.innerHTML = `<span class="text-red-400">读取配置失败：${esc(e.message)}</span>`;
   }
-}
-
-function updateKbSelectedCount(modal) {
-  const el = modal.querySelector('#my-add-kb-selected');
-  if (el) el.textContent = `已选 ${kbSelectedKeys.size} / ${KB_PICK_LIMIT}`;
 }
 
 export async function submitMyAccount() {
@@ -247,16 +196,14 @@ export async function submitMyAccount() {
   const trackerSel = document.getElementById('my-add-tracker');
   const trackerId = trackerSel?.value || '';
   const trackerOpt = trackerSel?.selectedOptions[0];
-  const kbKeys = Array.from(kbSelectedKeys).join(',');
   if (checked.includes('redfox') && !trackerId) { toast('RedFox 数据源需要选择关联的追踪账号', 'error'); return; }
-  if (checked.includes('kb') && !kbKeys) { toast('知识库数据源需要选择至少 1 个条目', 'error'); return; }
   const body = {
     plat,
     name,
     trackerId: trackerId || null,
     avatar: trackerOpt?.dataset.avatar || '',
     styleSource: checked.join(','),
-    styleSourceRef: kbKeys,
+    styleSourceRef: checked.includes('kb') ? 'all' : '',  // 'all' = 整库
   };
   // 编辑模式：带上 id
   const editId = document.getElementById('my-add-plat')?.dataset.editId;
@@ -283,8 +230,6 @@ export async function editMyAccount(el, d) {
     const accounts = await localApi('my-accounts');
     const a = accounts.find(x => x.id === d.id);
     if (!a) return;
-    // 复用添加弹窗，预填值
-    kbSelectedKeys = new Set((a.styleSourceRef || '').split(',').map(s => s.trim()).filter(Boolean));
     await addMyAccount();
     document.getElementById('my-add-plat').value = a.plat;
     document.getElementById('my-add-name').value = a.name;
@@ -294,13 +239,7 @@ export async function editMyAccount(el, d) {
       document.querySelector('input[name="my-source"][value="redfox"]').checked = false;
     }
     const kbCheckbox = document.querySelector('input[name="my-source"][value="kb"]');
-    if (a.styleSourceRef) {
-      kbCheckbox.checked = true;
-    } else {
-      kbCheckbox.checked = false;
-      kbSelectedKeys.clear();
-    }
-    // 触发 change 让对应区域显示并加载列表
+    kbCheckbox.checked = a.styleSourceRef === 'all' || a.styleSource === 'kb' || (a.styleSource || '').includes('kb');
     document.querySelectorAll('input[name="my-source"]').forEach(r => r.dispatchEvent(new Event('change')));
     document.getElementById('my-add-plat').dataset.editId = a.id;
   } catch (e) { toast(e.message, 'error'); }

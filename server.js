@@ -1054,29 +1054,64 @@ async function collectAccountSamples(account) {
     }
     samples.sourceDesc = `RedFox ${works.length} 篇作品`;
   }
-  // 来源 2：知识库条目（style_source_ref 是 entry_key 列表）
+  // 来源 2：知识库（style_source_ref='all' 表示整库；旧值是逗号分隔 entry key）
   if (account.styleSourceRef) {
-    const keys = account.styleSourceRef.split(',').map(s => s.trim()).filter(Boolean);
     const cfg = db.prepare('SELECT * FROM kb_config WHERE source_type = ?').get('current');
-    if (cfg && keys.length) {
-      for (const key of keys.slice(0, 5)) {
-        try {
-          if (cfg.provider === 'notion' || (cfg.notion_api_key && cfg.notion_database_id)) {
-            const apiKey = decryptKb(cfg.notion_api_key);
-            const page = await getPage(apiKey, key);
-            if (page?.title) samples.titles.push(page.title);
-            if (page?.content) samples.contents.push(page.content.slice(0, 1500));
-          } else if (cfg.source_path) {
-            const entry = readEntry(cfg.source_path, key);
-            if (entry?.title) samples.titles.push(entry.title);
-            if (entry?.content) samples.contents.push(entry.content.slice(0, 1500));
-            if (entry?.tags?.length) samples.tags.push(...entry.tags);
+    if (cfg) {
+      const isAll = account.styleSourceRef === 'all';
+      const keys = isAll ? [] : account.styleSourceRef.split(',').map(s => s.trim()).filter(Boolean);
+      // 整库模式：拉 Obsidian + Notion 各前 15 条作为样本
+      const readObsidian = async (limit) => {
+        if (!cfg.source_path || !fs.existsSync(cfg.source_path)) return [];
+        const entries = scanVault(cfg.source_path, {});
+        return entries.slice(0, limit);
+      };
+      const readNotion = async (limit) => {
+        if (!cfg.notion_api_key || !cfg.notion_database_id) return [];
+        const apiKey = decryptKb(cfg.notion_api_key);
+        const pages = await searchPages(apiKey, cfg.notion_database_id, {});
+        return pages.slice(0, limit);
+      };
+      try {
+        let kbCount = 0;
+        if (isAll) {
+          const [obs, nt] = await Promise.all([readObsidian(15), readNotion(15)]);
+          for (const e of obs) {
+            if (e?.title) samples.titles.push(e.title);
+            if (e?.content) samples.contents.push(e.content.slice(0, 1500));
+            if (e?.tags?.length) samples.tags.push(...e.tags);
+            kbCount++;
           }
-        } catch (e) {
-          console.warn(`[my-account] 读知识库条目 ${key} 失败:`, e.message);
+          for (const page of nt) {
+            const t = page?.title;
+            if (t) samples.titles.push(t);
+            if (page?.content) samples.contents.push(page.content.slice(0, 1500));
+            kbCount++;
+          }
+        } else {
+          for (const key of keys.slice(0, 5)) {
+            try {
+              if (cfg.notion_api_key && cfg.notion_database_id) {
+                const apiKey = decryptKb(cfg.notion_api_key);
+                const page = await getPage(apiKey, key);
+                if (page?.title) samples.titles.push(page.title);
+                if (page?.content) samples.contents.push(page.content.slice(0, 1500));
+              } else if (cfg.source_path) {
+                const entry = readEntry(cfg.source_path, key);
+                if (entry?.title) samples.titles.push(entry.title);
+                if (entry?.content) samples.contents.push(entry.content.slice(0, 1500));
+                if (entry?.tags?.length) samples.tags.push(...entry.tags);
+              }
+              kbCount++;
+            } catch (e) {
+              console.warn(`[my-account] 读知识库条目 ${key} 失败:`, e.message);
+            }
+          }
         }
+        if (kbCount) samples.sourceDesc += (samples.sourceDesc ? ' + ' : '') + `知识库 ${kbCount} 条`;
+      } catch (e) {
+        console.warn('[my-account] 知识库读取失败:', e.message);
       }
-      samples.sourceDesc += (samples.sourceDesc ? ' + ' : '') + `知识库 ${keys.length} 条`;
     }
   }
   return samples;
