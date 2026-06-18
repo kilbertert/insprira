@@ -124,6 +124,9 @@ function registerAction(name, fn) { actions.set(name, fn); }
 document.addEventListener('click', (e) => {
   const el = e.target.closest('[data-action]');
   if (!el) return;
+  // 表单控件（checkbox/radio/select/input/textarea）让浏览器默认处理，不拦截
+  const tag = e.target.tagName;
+  if (['INPUT', 'SELECT', 'TEXTAREA', 'OPTION'].includes(tag)) return;
   const handler = actions.get(el.dataset.action);
   if (!handler) return;
   e.preventDefault();
