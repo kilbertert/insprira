@@ -34,6 +34,8 @@ function bindPlatformSkillBadge() {
   sel.addEventListener('change', update);
   update();
 }
+
+function bindCreatorModeTabs() {
   document.querySelectorAll('.creator-mode-tab').forEach(btn => {
     if (btn.dataset.bound) return;
     btn.dataset.bound = '1';
