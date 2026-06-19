@@ -27,7 +27,7 @@ cp .env.example .env
 npm start
 ```
 
-浏览器访问 [http://127.0.0.1:8080](http://127.0.0.1:8080)。
+浏览器访问 [http://0.0.0.0:8080](http://0.0.0.0:8080)。
 
 首次启动创建默认账号 `admin / 123456`，登录后请立即在「账户与安全」修改密码。
 
@@ -48,7 +48,7 @@ cp .env.example .env
 docker compose up -d
 ```
 
-3. 访问 [http://127.0.0.1:8080](http://127.0.0.1:8080)。
+3. 访问 [http://0.0.0.0:8080](http://0.0.0.0:8080)。
 
 数据默认挂载到 `./data` 目录，包含 SQLite 数据库和运行日志。
 
@@ -64,28 +64,10 @@ docker run -d \
   -e APP_PASSWORD=你的登录密码 \
   -v $(pwd)/data:/data \
   --restart unless-stopped \
-  insprira
+  ghcr.io/coracoo/insprira:latest
 ```
 
 > 服务默认监听 `0.0.0.0`，本地和容器内均可直接访问。
-
-### 使用 GHCR 预构建镜像
-
-每次 push 到 `main`/`master` 或推送 `v*` 标签后，GitHub Actions 会自动构建 `linux/amd64` 与 `linux/arm64` 镜像并推送到 GHCR。直接拉取运行：
-
-```bash
-docker run -d \
-  --name insprira \
-  -p 8080:8080 \
-  -e HOST=0.0.0.0 \
-  -e REDFOX_API_KEY=你的RedFoxKey \
-  -e APP_PASSWORD=你的登录密码 \
-  -v $(pwd)/data:/data \
-  --restart unless-stopped \
-  ghcr.io/你的用户名/insprira:latest
-```
-
-> 首次使用需在仓库开启 **Settings → Actions → General → Workflow permissions → Read and write permissions**，否则 Actions 没有权限推送镜像到 GHCR。
 
 ## 配置
 
