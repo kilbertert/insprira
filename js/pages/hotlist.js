@@ -117,7 +117,10 @@ async function renderHotTabs() {
   if (!container) return;
   const platforms = await loadHotPlatforms();
   container.innerHTML = platforms.map((p, idx) =>
-    `<button class="tab-btn ${idx === 0 ? 'active' : ''} px-3 py-1.5 text-sm rounded-md" data-tab="${esc(p.key)}">${esc(p.label)}</button>`
+    `<div class="relative group inline-flex">
+      <button class="tab-btn ${idx === 0 ? 'active' : ''} px-3 py-1.5 text-sm rounded-md pr-5" data-tab="${esc(p.key)}">${esc(p.label)}</button>
+      <button class="absolute right-0.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 rounded-full hover:bg-red-500/80 text-[10px] text-gray-500 hover:text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity" data-action="closeHotTab" data-cron-id="${esc(p.cronId)}" data-tab="${esc(p.key)}" title="删除该 Tab">×</button>
+    </div>`
   ).join('');
 }
 
@@ -198,6 +201,27 @@ export async function renderHotTab(tab) {
 export async function toggleHotPlatformCron(cronId, enabled, tab) {
   await toggleCron(cronId, enabled);
   await renderHotTab(tab);
+}
+
+export async function closeHotTab(cronId, tab) {
+  if (!confirm('确定删除这个热榜 Tab？删除后会同时移除自动选题中的对应数据源。')) return;
+  try {
+    await localApi('crons/' + cronId, { method: 'DELETE' });
+    toast('已删除 Tab', 'success');
+    clearHotPlatforms();
+    await renderHotTabs();
+    const activeBtn = document.querySelector(`#hot-tabs [data-tab="${esc(tab)}"]`);
+    if (activeBtn) activeBtn.classList.remove('active');
+    const firstBtn = document.querySelector('#hot-tabs [data-tab]');
+    if (firstBtn) {
+      firstBtn.click();
+    } else {
+      const content = document.getElementById('hot-tab-content');
+      const metaEl = document.getElementById('hot-tab-meta');
+      if (content) content.innerHTML = '<div class="text-center text-gray-500 py-8 text-sm">暂无热榜 Tab，可通过 Skill 中心绑定。</div>';
+      if (metaEl) metaEl.innerHTML = '';
+    }
+  } catch (e) { toast('删除失败：' + e.message, 'error'); }
 }
 
 export async function syncHotTab(tab) {

@@ -1293,7 +1293,7 @@ async function suggestInspirationConfigs(account) {
     name: String(c?.name || '').slice(0, 20).trim(),
     keywords: Array.isArray(c?.keywords) ? c.keywords.slice(0, 8).map(k => String(k).trim()).filter(Boolean) : [],
     targetPlatforms: Array.isArray(c?.targetPlatforms) ? c.targetPlatforms.filter(p => ['dy', 'xhs', 'gzh'].includes(p)) : (defaultPlatform ? [defaultPlatform] : []),
-    sources: Array.isArray(c?.sources) ? c.sources.filter(s => INSPIRATION_SOURCE_KEYS.has(s)) : DEFAULT_INSPIRATION_SOURCES,
+    sources: Array.isArray(c?.sources) ? c.sources.filter(s => getInspirationSourceKeys().has(s)) : DEFAULT_INSPIRATION_SOURCES.filter(s => getInspirationSourceKeys().has(s)),
     ideaCount: Math.min(8, Math.max(3, Number(c?.ideaCount) || 5)),
   })).filter(c => c.name && c.keywords.length);
 }
@@ -3895,14 +3895,8 @@ const DEFAULT_INSPIRATION_SOURCES = [
   'hot', 'dy', 'xhs', 'gzh', 'ai-gzh', 'ai-bili', 'ai-xhs', 'tracked',
 ];
 
-const INSPIRATION_SOURCE_META = [
+const FIXED_INSPIRATION_SOURCE_META = [
   { key: 'hot', label: '全网热榜', category: 'hotlist', description: '综合各平台实时热榜' },
-  { key: 'dy', label: '抖音 TOP50', category: 'hotlist', description: '抖音热门内容' },
-  { key: 'xhs', label: '小红书 TOP50', category: 'hotlist', description: '小红书热门内容' },
-  { key: 'gzh', label: '公众号 TOP50', category: 'hotlist', description: '公众号热门文章' },
-  { key: 'ai-gzh', label: 'AI 公众号', category: 'hotlist', description: 'AI 筛选公众号信息源' },
-  { key: 'ai-bili', label: 'AI B站', category: 'hotlist', description: 'AI 筛选 B 站信息源' },
-  { key: 'ai-xhs', label: 'AI 小红书', category: 'hotlist', description: 'AI 筛选小红书信息源' },
   { key: 'tracked', label: '关注账号', category: 'local', description: '已追踪账号的最新作品' },
   { key: 'gzh-search', label: '公众号关键词搜索', category: 'search', description: '按关键词搜索公众号文章（占用 API 预算）' },
   { key: 'wechat-10w', label: '公众号 10W+', category: 'external', description: '公众号 10W+ 阅读榜' },
@@ -3912,7 +3906,35 @@ const INSPIRATION_SOURCE_META = [
   { key: 'wersss', label: 'WeRss（we-mp-rss）', category: 'local', description: '本地同步的 we-mp-rss 公众号文章' },
 ];
 
-const INSPIRATION_SOURCE_KEYS = new Set(INSPIRATION_SOURCE_META.map(s => s.key));
+function getEnabledHotPlatforms() {
+  const rows = db.prepare("SELECT task_config FROM crontab WHERE enabled = 1 AND task_type = 'hot-platform'").all();
+  return new Set(
+    rows.map(row => {
+      const cfg = parseJson(row.task_config) || {};
+      return cfg.platform;
+    }).filter(Boolean)
+  );
+}
+
+function getDynamicInspirationSources() {
+  const enabledPlatforms = getEnabledHotPlatforms();
+  return Object.entries(HOT_SOURCE_CONFIG)
+    .filter(([key]) => enabledPlatforms.has(key))
+    .map(([key, cfg]) => ({
+      key,
+      label: cfg.label,
+      category: 'hotlist',
+      description: `从 ${cfg.label} 获取热点证据`,
+    }));
+}
+
+function getInspirationSourceMeta() {
+  return [...getDynamicInspirationSources(), ...FIXED_INSPIRATION_SOURCE_META];
+}
+
+function getInspirationSourceKeys() {
+  return new Set(getInspirationSourceMeta().map(s => s.key));
+}
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, Number(value) || 0));
@@ -3973,8 +3995,9 @@ function saveInspirationConfig(input, existingId = null) {
   if (!parseCronExpr(cronExpr)) throw new Error('Cron 表达式无效');
   const now = Date.now();
   const current = db.prepare('SELECT created_at FROM inspiration_keyword_configs WHERE id = ?').get(id);
+  const validKeys = getInspirationSourceKeys();
   const sources = (Array.isArray(input.sources) ? input.sources : DEFAULT_INSPIRATION_SOURCES)
-    .filter(source => INSPIRATION_SOURCE_KEYS.has(source));
+    .filter(source => validKeys.has(source));
   const sourceWeights = Object.fromEntries(Object.entries(input.sourceWeights || {})
     .map(([key, value]) => [key, clamp(value, 0, 3)]));
   db.transaction(() => {
@@ -4421,7 +4444,7 @@ async function generateInspirations(body) {
     config = {
       id: null,
       domain,
-      sources: adHocSources.filter(source => INSPIRATION_SOURCE_KEYS.has(source)),
+      sources: adHocSources.filter(source => getInspirationSourceKeys().has(source)),
       terms: keywords.map(term => ({ term, type: 'core', weight: 0 })),
       dailyApiBudget: 3,
       evidenceLimit: 20,
@@ -5815,7 +5838,7 @@ async function handleLocalApi(req, res, url) {
     return true;
   }
   if (url.pathname === '/api/_/inspiration-sources' && req.method === 'GET') {
-    json(res, 200, { ok: true, data: INSPIRATION_SOURCE_META });
+    json(res, 200, { ok: true, data: getInspirationSourceMeta() });
     return true;
   }
   if (url.pathname === '/api/_/inspiration-configs' && req.method === 'GET') {
