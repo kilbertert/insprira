@@ -52,12 +52,12 @@ async function wersssFetch(baseUrl, token, path, options = {}) {
   }
 }
 
-async function login(baseUrl, username, password) {
+async function loginWithPath(baseUrl, username, password, path) {
   const body = new URLSearchParams();
   body.set('username', username);
   body.set('password', password);
-  body.set('grant_type', 'password');
-  const url = `${baseUrl.replace(/\/$/, '')}/api/v1/wx/auth/login`;
+  if (path.includes('/login')) body.set('grant_type', 'password');
+  const url = `${baseUrl.replace(/\/$/, '')}${path}`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT);
   try {
@@ -83,6 +83,23 @@ async function login(baseUrl, username, password) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function login(baseUrl, username, password) {
+  // 1.5.2 优先使用 /api/v1/wx/auth/token；旧版使用 /api/v1/wx/auth/login
+  const paths = ['/api/v1/wx/auth/token', '/api/v1/wx/auth/login'];
+  let lastErr = null;
+  for (const path of paths) {
+    try {
+      const result = await loginWithPath(baseUrl, username, password, path);
+      if (result?.access_token) return result;
+    } catch (e) {
+      lastErr = e;
+      // 405 / 404 时尝试下一个路径
+      if (e.status !== 405 && e.status !== 404) break;
+    }
+  }
+  throw lastErr || new Error('WeRss 登录失败');
 }
 
 // 公众号字段映射：
