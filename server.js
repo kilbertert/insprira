@@ -786,11 +786,6 @@ function registerDefaultCrons() {
       ON CONFLICT(module, data_key) DO UPDATE SET data_json = excluded.data_json, cached_at = excluded.cached_at
     `).run(JSON.stringify(true), now, now + 100 * 365 * 24 * 60 * 60 * 1000);
   }
-  // 清理未启用的可绑定 platform cron（它们会在 Skill 中心绑定时动态创建）
-  const bindablePlatforms = ['ai-gzh', 'ai-bili', 'ai-xhs', 'ai-dy', 'ai-ks', 'ai-sph', 'playlet-dy', 'playlet-gzh'];
-  const staleIds = bindablePlatforms.map(p => `hot-daily-${p}`);
-  const placeholders = staleIds.map(() => '?').join(',');
-  db.prepare(`DELETE FROM crontab WHERE id IN (${placeholders}) AND enabled = 0`).run(...staleIds);
 }
 registerDefaultCrons();
 
