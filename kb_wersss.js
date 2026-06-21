@@ -169,6 +169,30 @@ async function getArticle(baseUrl, token, id) {
   return adaptArticle(unwrap(payload));
 }
 
+async function verifyToken(baseUrl, token) {
+  const payload = await wersssFetch(baseUrl, token, '/api/v1/auth/verify');
+  return unwrap(payload);
+}
+
+async function qrStatus(baseUrl, token) {
+  const payload = await wersssFetch(baseUrl, token, '/api/v1/auth/qr/status');
+  return unwrap(payload);
+}
+
+async function qrImage(baseUrl, token) {
+  const payload = await wersssFetch(baseUrl, token, '/api/v1/auth/qr/image');
+  const data = unwrap(payload);
+  if (typeof data === 'string') return data;
+  return data?.qr_url || data?.url || data?.image || data?.code || '';
+}
+
+async function qrCode(baseUrl, token) {
+  const payload = await wersssFetch(baseUrl, token, '/api/v1/auth/qr/code');
+  const data = unwrap(payload);
+  if (typeof data === 'string') return data;
+  return data?.qr_url || data?.url || data?.code || '';
+}
+
 module.exports = {
   login,
   listSubscriptions,
@@ -176,6 +200,10 @@ module.exports = {
   listArticles,
   getArticle,
   updateMp,
+  verifyToken,
+  qrStatus,
+  qrImage,
+  qrCode,
   wersssFetch,
   unwrap,
   extractList,

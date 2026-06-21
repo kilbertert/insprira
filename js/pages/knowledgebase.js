@@ -808,10 +808,86 @@ let currentWersssMp = ''; // 空 = 显示全部
 let currentWersssQuery = ''; // 搜索关键词
 let wersssSearchTimer = null;
 let wersssBodyScrollStyle = ''; // 保存打开弹窗前的 body overflow
+let wersssQrTimer = null;
 
 export async function renderWersss() {
+  try {
+    const status = await localApi('wersss/status');
+    if (status.configured && status.enabled && !status.wxAuthorized) {
+      showWersssQrModal(status);
+      return;
+    }
+  } catch (e) {
+    console.warn('检查 WeRss 状态失败:', e.message);
+  }
   await Promise.all([loadWersssStatus(), loadWersssSubs(), loadWersssArticles()]);
   bindWersssSearch();
+}
+
+function showWersssQrModal(status) {
+  const existing = document.getElementById('wersss-qr-modal');
+  if (existing) existing.remove();
+  const modal = document.createElement('div');
+  modal.id = 'wersss-qr-modal';
+  modal.className = 'modal-mask';
+  const imgSrc = status.qrImage || status.qrCodeUrl || '';
+  modal.innerHTML = `
+    <div class="modal" style="max-width:380px">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-lg font-bold">WeRss 授权已过期</h2>
+        <button class="btn btn-ghost py-1 px-2" data-action="closeWersssQrModal"><i data-lucide="x" class="w-4 h-4"></i></button>
+      </div>
+      <p class="text-xs text-gray-400 mb-4">${esc(status.message || '请使用微信扫描下方二维码重新授权')}</p>
+      <div class="flex justify-center mb-4">
+        ${imgSrc ? `<img src="${esc(imgSrc)}" alt="WeRss 授权二维码" class="rounded-lg border border-white/10" style="max-width:280px">` : '<div class="text-sm text-gray-500">二维码加载失败，请刷新</div>'}
+      </div>
+      <div class="text-center text-xs text-gray-500 mb-4" id="wersss-qr-status-text">等待扫码…</div>
+      <div class="flex justify-center gap-2">
+        <button class="btn btn-primary" data-action="refreshWersssQr">刷新二维码</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  initIcons(modal);
+  startWersssQrPolling();
+}
+
+export function closeWersssQrModal() {
+  if (wersssQrTimer) { clearInterval(wersssQrTimer); wersssQrTimer = null; }
+  document.getElementById('wersss-qr-modal')?.remove();
+}
+
+export async function refreshWersssQr() {
+  try {
+    const status = await localApi('wersss/status');
+    const imgSrc = status.qrImage || status.qrCodeUrl || '';
+    const img = document.querySelector('#wersss-qr-modal img');
+    if (img && imgSrc) img.src = imgSrc;
+    const text = document.getElementById('wersss-qr-status-text');
+    if (text) text.textContent = status.wxAuthorized ? '授权成功，即将刷新…' : '等待扫码…';
+    if (status.wxAuthorized) {
+      setTimeout(() => { closeWersssQrModal(); renderWersss(); }, 1000);
+    }
+  } catch (e) { toast('刷新失败：' + e.message, 'error'); }
+}
+
+function startWersssQrPolling() {
+  if (wersssQrTimer) clearInterval(wersssQrTimer);
+  wersssQrTimer = setInterval(async () => {
+    try {
+      const status = await localApi('wersss/status');
+      const text = document.getElementById('wersss-qr-status-text');
+      if (status.wxAuthorized) {
+        if (text) text.textContent = '授权成功，即将刷新…';
+        setTimeout(() => { closeWersssQrModal(); renderWersss(); }, 1000);
+      } else {
+        const imgSrc = status.qrImage || status.qrCodeUrl || '';
+        const img = document.querySelector('#wersss-qr-modal img');
+        if (img && imgSrc && img.src !== imgSrc) img.src = imgSrc;
+        if (text) text.textContent = '等待扫码…';
+      }
+    } catch (e) { console.warn('轮询 WeRss 状态失败:', e.message); }
+  }, 3000);
 }
 
 function bindWersssSearch() {

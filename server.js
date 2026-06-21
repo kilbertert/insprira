@@ -901,6 +901,59 @@ async function getValidWersssToken() {
   return { token: result.access_token, config: { ...config, token: result.access_token, tokenExpiresAt: expiresAt } };
 }
 
+async function getWersssAuthStatus() {
+  const cfgRow = getWersssConfigRow();
+  if (!cfgRow) return { configured: false, enabled: false, message: 'WeRss 未配置' };
+  if (!cfgRow.enabled) return { configured: true, enabled: false, message: 'WeRss 接入已禁用' };
+  let token;
+  let tokenRefreshed = false;
+  try {
+    const valid = await getValidWersssToken();
+    token = valid.token;
+    tokenRefreshed = !cfgRow.token || cfgRow.token !== token;
+  } catch (e) {
+    return { configured: true, enabled: true, tokenValid: false, message: `登录失败：${e.message}` };
+  }
+  const config = getWersssConfig();
+  try {
+    const status = await wersss.qrStatus(config.baseUrl, token);
+    const loginStatus = Boolean(status?.login_status);
+    const hasCode = Boolean(status?.qr_code);
+    let qrImage = '';
+    let qrCodeUrl = '';
+    if (!loginStatus) {
+      try {
+        qrImage = await wersss.qrImage(config.baseUrl, token);
+      } catch (imageErr) {
+        try {
+          qrCodeUrl = await wersss.qrCode(config.baseUrl, token);
+        } catch (codeErr) {
+          console.warn('[wersss] 获取二维码失败:', imageErr.message, codeErr.message);
+        }
+      }
+    }
+    return {
+      configured: true,
+      enabled: true,
+      tokenValid: true,
+      tokenRefreshed,
+      wxAuthorized: loginStatus,
+      hasQrCode: hasCode,
+      qrImage,
+      qrCodeUrl,
+      message: loginStatus ? '微信已授权' : '微信授权已过期，请扫码重新授权',
+    };
+  } catch (e) {
+    return {
+      configured: true,
+      enabled: true,
+      tokenValid: true,
+      wxAuthorized: false,
+      message: `授权状态检测失败：${e.message}`,
+    };
+  }
+}
+
 async function syncWersssArticles() {
   const cfgRow = getWersssConfigRow();
   if (!cfgRow) throw new Error('WeRss 未配置');
@@ -6483,6 +6536,14 @@ ${keywordsList}
         updated_at = excluded.updated_at
     `).run(baseUrl, username, enc, loginResult.access_token, expiresAt, enabled ? 1 : 0, Date.now());
     json(res, 200, { ok: true, data: { saved: true, tested: true, tokenExpiresAt: expiresAt } });
+    return true;
+  }
+  // GET /api/_/wersss/status —— 检测 we-mp-rss token 与微信授权状态
+  if (url.pathname === '/api/_/wersss/status' && req.method === 'GET') {
+    try {
+      const status = await getWersssAuthStatus();
+      json(res, 200, { ok: true, data: status });
+    } catch (e) { json(res, 500, { ok: false, error: e.message }); }
     return true;
   }
   // GET /api/_/wersss/subscriptions
