@@ -13,76 +13,37 @@
 - **内容重构**：多平台改写、RedFox `gpt-image-2` 封面生成、违禁词检测
 - **本地 Agent**：Codex / Claude Code / Kimi / OpenClaw / Hermes 子进程集成
 - **CRON 调度**：内置每日热榜快照、缓存清理、WeRss 同步、账号追踪刷新等任务；支持自定义、拖拽排序
-- **Docker & 多架构镜像**：提供 Dockerfile 和 Docker Compose，GitHub Actions 自动构建 `linux/amd64` 与 `linux/arm64` 镜像并推送到 GHCR
+- **Docker 部署**：Dockerfile + Docker Compose，支持 linux/amd64 与 linux/arm64
 
 ## 本地启动
 
-要求 Node.js ≥ 20。
+Node.js ≥ 20：
 
 ```bash
-cd insprira
 npm install
 cp .env.example .env
-# 编辑 .env，至少填写 REDFOX_API_KEY 和 KB_ENCRYPTION_KEY
+# 编辑 .env，填写 REDFOX_API_KEY、LLM_API_KEY、KB_ENCRYPTION_KEY
 npm start
 ```
-
-浏览器访问 [http://0.0.0.0:8080](http://0.0.0.0:8080)。
 
 首次启动创建默认账号 `admin / 123456`，登录后请立即在「账户与安全」修改密码。
 
 ## Docker 部署
 
-### 使用 Docker Compose（推荐）
-
-1. 复制环境变量文件并填写必填项：
-
 ```bash
 cp .env.example .env
-# 编辑 .env，至少填写 REDFOX_API_KEY
-```
-
-2. 启动服务：
-
-```bash
 docker compose up -d
 ```
 
-3. 访问 [http://0.0.0.0:8080](http://0.0.0.0:8080)。
-
-数据默认挂载到 `./data` 目录，包含 SQLite 数据库和运行日志。
-
-### 使用 Docker 命令
-
-```bash
-docker build -t insprira .
-docker run -d \
-  --name insprira \
-  -p 8080:8080 \
-  -e HOST=0.0.0.0 \
-  -e REDFOX_API_KEY=你的RedFoxKey \
-  -e APP_PASSWORD=你的登录密码 \
-  -v $(pwd)/data:/data \
-  --restart unless-stopped \
-  ghcr.io/coracoo/insprira:latest
-```
-
-> 服务默认监听 `0.0.0.0`，本地和容器内均可直接访问。
+数据挂载到 `./data`（SQLite 数据库、日志）。
 
 ## 配置
 
-完整字段见 [`.env.example`](.env.example)。必填项：
+必填字段见 [`.env.example`](.env.example)：
 
-- `REDFOX_API_KEY` — RedFox 平台 API Key
-- `LLM_API_KEY` — OpenAI 兼容 LLM 服务的 Key（用于选题生成、热点分析）
-- `KB_ENCRYPTION_KEY` — 加密密钥，用 `openssl rand -hex 32` 生成，配置后请勿修改
-
-## 验证
-
-```bash
-npm run check   # 语法检查
-npm test        # 回归测试
-```
+- `REDFOX_API_KEY` — RedFox API Key
+- `LLM_API_KEY` — OpenAI 兼容 LLM Key（选题生成、热点分析）
+- `KB_ENCRYPTION_KEY` — 加密密钥，用 `openssl rand -hex 32` 生成
 
 ## License
 

@@ -8,6 +8,20 @@ export const fmt = n => {
   return String(n);
 };
 
+// ============= UUID 生成（带降级） =============
+// 优先用浏览器的 crypto.randomUUID（仅在 secure context 暴露：HTTPS / localhost / 127.0.0.1）。
+// 通过局域网 IP、0.0.0.0 等访问时 randomUUID 可能是 undefined，降级到 RFC4122 v4 的 Math.random 实现。
+export function genUUID() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
 // ============= HTML 转义 =============
 export const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'

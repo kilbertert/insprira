@@ -814,7 +814,7 @@ export async function renderWersss() {
   try {
     const status = await localApi('wersss/status');
     if (status.configured && status.enabled && !status.wxAuthorized) {
-      showWersssQrModal(status);
+      await showWersssQrModal(status);
       return;
     }
   } catch (e) {
@@ -824,13 +824,12 @@ export async function renderWersss() {
   bindWersssSearch();
 }
 
-function showWersssQrModal(status) {
+async function showWersssQrModal(status) {
   const existing = document.getElementById('wersss-qr-modal');
   if (existing) existing.remove();
   const modal = document.createElement('div');
   modal.id = 'wersss-qr-modal';
   modal.className = 'modal-mask';
-  const imgSrc = status.qrImage || status.qrCodeUrl || '';
   modal.innerHTML = `
     <div class="modal" style="max-width:380px">
       <div class="flex items-center justify-between mb-4">
@@ -839,7 +838,7 @@ function showWersssQrModal(status) {
       </div>
       <p class="text-xs text-gray-400 mb-4">${esc(status.message || '请使用微信扫描下方二维码重新授权')}</p>
       <div class="flex justify-center mb-4">
-        ${imgSrc ? `<img src="${esc(imgSrc)}" alt="WeRss 授权二维码" class="rounded-lg border border-white/10" style="max-width:280px">` : '<div class="text-sm text-gray-500">二维码加载失败，请刷新</div>'}
+        <div class="text-sm text-gray-500" id="wersss-qr-img-placeholder">加载中…</div>
       </div>
       <div class="text-center text-xs text-gray-500 mb-4" id="wersss-qr-status-text">等待扫码…</div>
       <div class="flex justify-center gap-2">
@@ -850,6 +849,8 @@ function showWersssQrModal(status) {
   document.body.appendChild(modal);
   initIcons(modal);
   startWersssQrPolling();
+  // 触发一次 QR 生成并显示（只在此处调用，不要在轮询里重复调）
+  await refreshWersssQr();
 }
 
 export function closeWersssQrModal() {
@@ -859,32 +860,42 @@ export function closeWersssQrModal() {
 
 export async function refreshWersssQr() {
   try {
-    const status = await localApi('wersss/status');
-    const imgSrc = status.qrImage || status.qrCodeUrl || '';
-    const img = document.querySelector('#wersss-qr-modal img');
-    if (img && imgSrc) img.src = imgSrc;
-    const text = document.getElementById('wersss-qr-status-text');
-    if (text) text.textContent = status.wxAuthorized ? '授权成功，即将刷新…' : '等待扫码…';
-    if (status.wxAuthorized) {
-      setTimeout(() => { closeWersssQrModal(); renderWersss(); }, 1000);
+    const { data } = await localApi('wersss/qr/start', { method: 'POST' });
+    const imgSrc = data?.qrUrl || '';
+    const placeholder = document.getElementById('wersss-qr-img-placeholder');
+    const existingImg = document.querySelector('#wersss-qr-modal img');
+    if (imgSrc) {
+      if (existingImg) {
+        existingImg.src = imgSrc;
+      } else if (placeholder) {
+        const img = document.createElement('img');
+        img.src = imgSrc;
+        img.alt = 'WeRss 授权二维码';
+        img.className = 'rounded-lg border border-white/10';
+        img.style = 'max-width:280px';
+        placeholder.replaceWith(img);
+      }
+    } else if (placeholder) {
+      placeholder.textContent = '二维码加载失败，请刷新';
     }
-  } catch (e) { toast('刷新失败：' + e.message, 'error'); }
+  } catch (e) {
+    const placeholder = document.getElementById('wersss-qr-img-placeholder');
+    if (placeholder) placeholder.textContent = '二维码加载失败，请刷新';
+    console.warn('[wersss] 刷新 QR 失败:', e.message);
+  }
 }
 
 function startWersssQrPolling() {
   if (wersssQrTimer) clearInterval(wersssQrTimer);
   wersssQrTimer = setInterval(async () => {
     try {
-      const status = await localApi('wersss/status');
+      const { data: status } = await localApi('wersss/status');
       const text = document.getElementById('wersss-qr-status-text');
       if (status.wxAuthorized) {
         if (text) text.textContent = '授权成功，即将刷新…';
         setTimeout(() => { closeWersssQrModal(); renderWersss(); }, 1000);
-      } else {
-        const imgSrc = status.qrImage || status.qrCodeUrl || '';
-        const img = document.querySelector('#wersss-qr-modal img');
-        if (img && imgSrc && img.src !== imgSrc) img.src = imgSrc;
-        if (text) text.textContent = '等待扫码…';
+      } else if (text) {
+        text.textContent = '等待扫码…';
       }
     } catch (e) { console.warn('轮询 WeRss 状态失败:', e.message); }
   }, 3000);

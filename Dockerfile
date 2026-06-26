@@ -1,15 +1,21 @@
 # syntax=docker/dockerfile:1
 FROM node:22-slim
 
-# better-sqlite3 需要编译原生模块
+# better-sqlite3 需要编译原生模块；unzip 用于 Skill 一键更新；
+# python3-pip 用于给 skill 脚本装第三方包（Debian 12 PEP 668 需 --break-system-packages）
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
+    python3-pip \
     make \
     g++ \
     gcc \
     ca-certificates \
     git \
+    unzip \
   && rm -rf /var/lib/apt/lists/*
+
+# skill 脚本目前用到的第三方 Python 包只有 requests（已扫过所有 skill 脚本）
+RUN pip3 install --no-cache-dir --break-system-packages requests
 
 WORKDIR /app
 

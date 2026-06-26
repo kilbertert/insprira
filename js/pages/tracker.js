@@ -1,6 +1,6 @@
 import { api, localApi } from '../api.js';
 import { LS, currentPage, getSortedTrackers, setTrackerOrder } from '../state.js';
-import { esc, fmt, proxyImage, copyToClipboard, renderMarkdown } from '../utils.js';
+import { esc, fmt, proxyImage, copyToClipboard, renderMarkdown, genUUID } from '../utils.js';
 import { platName } from '../config.js';
 import { toast } from '../components.js';
 import { initIcons } from '../icons.js';
@@ -323,7 +323,7 @@ export async function submitAddAccount() {
     ...existing,
     plat,
     name,
-    id: trackerId || crypto.randomUUID(),
+    id: trackerId || genUUID(),
     accountId,
     group: group === 'other' ? '其他' : group,
     autoSync,

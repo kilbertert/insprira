@@ -196,18 +196,65 @@ async function qrStatus(baseUrl, token) {
   return unwrap(payload);
 }
 
+// 触发 we-mp-rss 生成 QR（1.5+ 之后不调用这一步 qr/image 永远返回 data:false）
+// 用 POST 不行（这些端点只支持 GET），用 GET 后端会写 wx_qrcode.png 到 /static
+// 注意：这一步会轮换服务端 QR 文件，**不能放在 qrImage/qrCode 内部**，
+// 否则前端每 3 秒 poll 一次就会反复触发，导致原 QR 还没扫就被替换。
+async function triggerQrCreate(baseUrl, token) {
+  for (const path of ['/api/v1/wx/auth/qr/create', '/api/v1/wx/auth/qr/start', '/api/v1/wx/auth/qr/init']) {
+    try {
+      await wersssFetch(baseUrl, token, path);
+      return true;
+    } catch {}
+  }
+  return false;
+}
+
+// 把 we-mp-rss 返回的相对路径解析成绝对 URL；返回空说明还没生成
+function resolveQrPath(baseUrl, raw) {
+  if (!raw) return '';
+  if (/^https?:\/\//i.test(raw)) return raw;
+  if (raw.startsWith('//')) return 'http:' + raw;
+  return baseUrl.replace(/\/$/, '') + (raw.startsWith('/') ? '' : '/') + raw;
+}
+
+// 单纯读 QR 路径（不触发）。先看 /qr/image，回退到 /qr/code。
 async function qrImage(baseUrl, token) {
   const payload = await wersssFetch(baseUrl, token, '/api/v1/wx/auth/qr/image');
   const data = unwrap(payload);
-  if (typeof data === 'string') return data;
-  return data?.qr_url || data?.url || data?.image || data?.code || '';
+  if (typeof data === 'string') {
+    if (data === 'true' || data === 'false') return qrCode(baseUrl, token);
+    return resolveQrPath(baseUrl, data);
+  }
+  if (data === true || data === false) return qrCode(baseUrl, token);
+  const raw = data?.qr_url || data?.url || data?.image || data?.code || '';
+  return resolveQrPath(baseUrl, raw);
 }
 
 async function qrCode(baseUrl, token) {
   const payload = await wersssFetch(baseUrl, token, '/api/v1/wx/auth/qr/code');
   const data = unwrap(payload);
-  if (typeof data === 'string') return data;
-  return data?.qr_url || data?.url || data?.code || '';
+  if (typeof data === 'string') return resolveQrPath(baseUrl, data);
+  if (data && typeof data === 'object') {
+    const raw = data?.qr_url || data?.url || data?.code || '';
+    if (raw) return resolveQrPath(baseUrl, raw);
+  }
+  return '';
+}
+
+// 启动一次微信扫码授权：触发 QR 生成 + 等服务端把文件准备好再返回 URL。
+// 前端只应在「打开二维码弹窗」时调用一次，**不要在轮询里反复调**。
+async function startWersssAuth(baseUrl, token, opts = {}) {
+  const maxWaitMs = opts.maxWaitMs || 8000;
+  const intervalMs = opts.intervalMs || 400;
+  await triggerQrCreate(baseUrl, token);
+  const deadline = Date.now() + maxWaitMs;
+  while (Date.now() < deadline) {
+    const path = await qrImage(baseUrl, token);
+    if (path) return path;
+    await new Promise(r => setTimeout(r, intervalMs));
+  }
+  return '';
 }
 
 module.exports = {
@@ -221,6 +268,7 @@ module.exports = {
   qrStatus,
   qrImage,
   qrCode,
+  startWersssAuth,
   wersssFetch,
   unwrap,
   extractList,

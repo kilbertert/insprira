@@ -1,32 +1,20 @@
 services:
   insprira:
+    # 本地构建：先 `docker build -t insprira .`，再 `docker compose up -d`。
+    # 如需临时切回远端镜像：把 build 注释掉、image 改成 `ghcr.io/coracoo/insprira:latest`
     build:
       context: .
       dockerfile: Dockerfile
-    image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-redfox-community}/insprira:latest
+    image: insprira:latest
     container_name: insprira
     restart: unless-stopped
     ports:
       - "8080:8080"
+    env_file:
+      - .env
     environment:
       # 必须：监听地址要改成 0.0.0.0，否则容器外无法访问
       HOST: 0.0.0.0
-      # 必填：RedFox API Key
-      REDFOX_API_KEY: ${REDFOX_API_KEY:?请在 .env 中设置 REDFOX_API_KEY}
-      # 强烈建议：登录密码，未设置时不启用认证
-      APP_PASSWORD: ${APP_PASSWORD:-}
-      # 可选：OpenAI 兼容 LLM 配置
-      LLM_BASE_URL: ${LLM_BASE_URL:-}
-      LLM_API_KEY: ${LLM_API_KEY:-}
-      LLM_MODEL: ${LLM_MODEL:-}
-      # 可选：知识库加密密钥，首次设置后请勿修改
-      KB_ENCRYPTION_KEY: ${KB_ENCRYPTION_KEY:-}
-      # 可选：外部 Agent CLI 路径
-      CODEX_BIN: ${CODEX_BIN:-}
-      CLAUDE_BIN: ${CLAUDE_BIN:-}
-      KIMI_BIN: ${KIMI_BIN:-}
-      OPENCLAW_BIN: ${OPENCLAW_BIN:-}
-      HERMES_BIN: ${HERMES_BIN:-}
     volumes:
-      # 持久化 SQLite 数据库、日志和本地数据
+      # 持久化 SQLite 数据库、Skill 库、运行日志
       - ./data:/data

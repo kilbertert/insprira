@@ -45,7 +45,9 @@ const CLAUDE_BIN = process.env.CLAUDE_BIN || 'claude';
 const KIMI_BIN = process.env.KIMI_BIN || 'kimi';
 const OPENCLAW_BIN = process.env.OPENCLAW_BIN || 'openclaw';
 const HERMES_BIN = process.env.HERMES_BIN || 'hermes';
-const SKILLS_ROOT = path.join(__dirname, 'skills', 'redfox-community', 'skills');
+const SKILLS_ROOT = process.env.DATA_DIR
+  ? path.join(process.env.DATA_DIR, 'skills', 'redfox-community', 'skills')
+  : path.join(__dirname, 'skills', 'redfox-community', 'skills');
 const SKILLS_REPO_ROOT = path.dirname(SKILLS_ROOT);
 const SKILLS_GITHUB_REPO = 'redfox-data/redfox-community';
 const SKILLS_NEW_BADGE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -232,7 +234,12 @@ const CACHE_TTL = {
 
 const DB_PATH = process.env.CACHE_DB_PATH
   ? path.resolve(process.env.CACHE_DB_PATH)
-  : path.join(__dirname, 'cache.db');
+  : process.env.DATA_DIR
+    ? path.join(process.env.DATA_DIR, 'cache.db')
+    : path.join(__dirname, 'cache.db');
+if (process.env.DATA_DIR) {
+  try { fs.mkdirSync(process.env.DATA_DIR, { recursive: true }); } catch {}
+}
 const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
@@ -733,9 +740,6 @@ function registerDefaultCrons() {
     INSERT INTO crontab (id, name, cron_expr, enabled, task_type, task_config, sort_order, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
-      name = excluded.name,
-      cron_expr = excluded.cron_expr,
-      enabled = excluded.enabled,
       task_type = excluded.task_type,
       task_config = excluded.task_config,
       sort_order = CASE WHEN COALESCE(crontab.sort_order, 0) = 0 THEN excluded.sort_order ELSE crontab.sort_order END
@@ -914,19 +918,8 @@ async function getWersssAuthStatus() {
     const status = await wersss.qrStatus(config.baseUrl, token);
     const loginStatus = Boolean(status?.login_status);
     const hasCode = Boolean(status?.qr_code);
-    let qrImage = '';
-    let qrCodeUrl = '';
-    if (!loginStatus) {
-      try {
-        qrImage = await wersss.qrImage(config.baseUrl, token);
-      } catch (imageErr) {
-        try {
-          qrCodeUrl = await wersss.qrCode(config.baseUrl, token);
-        } catch (codeErr) {
-          console.warn('[wersss] 获取二维码失败:', imageErr.message, codeErr.message);
-        }
-      }
-    }
+    // 注意：这里不主动拉 qrImage/qrCode，更不触发 QR 生成。
+    // QR 触发 / 拉取交给前端的 POST /api/_/wersss/qr/start 单次调用。
     return {
       configured: true,
       enabled: true,
@@ -934,8 +927,6 @@ async function getWersssAuthStatus() {
       tokenRefreshed,
       wxAuthorized: loginStatus,
       hasQrCode: hasCode,
-      qrImage,
-      qrCodeUrl,
       message: loginStatus ? '微信已授权' : '微信授权已过期，请扫码重新授权',
     };
   } catch (e) {
@@ -6538,6 +6529,16 @@ ${keywordsList}
     try {
       const status = await getWersssAuthStatus();
       json(res, 200, { ok: true, data: status });
+    } catch (e) { json(res, 500, { ok: false, error: e.message }); }
+    return true;
+  }
+  // POST /api/_/wersss/qr/start —— 触发一次 QR 生成并返回 URL（前端打开弹窗时调用，不要轮询）
+  if (url.pathname === '/api/_/wersss/qr/start' && req.method === 'POST') {
+    try {
+      const valid = await getValidWersssToken();
+      const config = getWersssConfig();
+      const qrUrl = await wersss.startWersssAuth(config.baseUrl, valid.token);
+      json(res, 200, { ok: true, data: { qrUrl } });
     } catch (e) { json(res, 500, { ok: false, error: e.message }); }
     return true;
   }
