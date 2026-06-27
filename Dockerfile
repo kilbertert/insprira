@@ -23,7 +23,7 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci --only=production
 
-# 复制应用代码
+# 复制应用代码（bind mount 会覆盖个别文件用于热更新）
 COPY . .
 
 # 数据目录：SQLite 数据库和日志建议挂载到此目录
@@ -34,4 +34,4 @@ VOLUME ["/data"]
 # 默认监听端口
 EXPOSE 8080
 
-CMD ["node", "--watch", "server.js"]
+CMD ["node", "server.js"]
