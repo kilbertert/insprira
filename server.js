@@ -1774,32 +1774,34 @@ async function classifySkill(skill, retries = 2) {
 - 检索：搜索关键词/账号/文章的工具
 - 生成工具：生成图片/视频/封面等媒体内容的工具
 
-重要约束：
-1. 必须且只能从以上五类中选择一个，禁止输出平台名（如抖音、小红书、公众号、B站）或其他任何类别名称。
-2. 严格只输出一个类别名称，不要解释、不要 reasoning、不要 Markdown。`,
+你必须且只能从以上五类中选择一个，禁止输出平台名或其他任何类别名称。`,
     },
     {
       role: 'user',
-      content: `slug: ${skill.slug}\n标题: ${skill.title}\n描述: ${skill.description || '(无)'}`,
+      content: JSON.stringify({
+        instruction: '请从上述五类中选择一个最合适的类别，返回格式：{"category": "类别名"}',
+        skill: {
+          slug: skill.slug,
+          title: skill.title,
+          description: skill.description || '(无)',
+        },
+      }),
     },
   ];
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      const result = await callLlm(messages, { temperature: 0, maxTokens: 1024 });
-      // 去掉 <thought> XML 标签和 Markdown 代码块
-      const raw = String(result || '').replace(/<[^>]+>/g, '').trim();
-      const cleaned = raw.split(/[\n，,。]/)[0].trim();
-      // 容错：如果模型输出平台名或不在五类中，尝试从输出里匹配最接近的类别
-      let category = LLM_SKILL_CATEGORIES.includes(cleaned) ? cleaned : null;
-      if (!category) {
-        for (const candidate of LLM_SKILL_CATEGORIES) {
-          if (cleaned.includes(candidate)) {
-            category = candidate;
+      const data = await callLlmJson(messages);
+      let category = String(data?.category || '').trim();
+      // 验证类别合法性，允许模糊匹配
+      if (!LLM_SKILL_CATEGORIES.includes(category)) {
+        for (const c of LLM_SKILL_CATEGORIES) {
+          if (category.includes(c) || c.includes(category)) {
+            category = c;
             break;
           }
         }
       }
-      if (category) {
+      if (LLM_SKILL_CATEGORIES.includes(category)) {
         const now = Date.now();
         db.prepare(`
           INSERT INTO skill_classifications (slug, llm_category, original_category, analyzed_at, skill_signature)
@@ -1812,8 +1814,8 @@ async function classifySkill(skill, retries = 2) {
         `).run(skill.slug, category, skill.category, now, signature);
         return category;
       }
-      console.warn(`[skill] LLM 输出不在五类中 ${skill.slug}: ${cleaned}`);
-      break; // 非限速错误，不重试
+      console.warn(`[skill] LLM 输出非法类别 ${skill.slug}: ${category}`);
+      break;
     } catch (e) {
       const isRateLimit = e.message.includes('速率限制') || e.message.includes('429') || e.message.includes('rate limit');
       if (isRateLimit && attempt < retries) {
@@ -3626,14 +3628,18 @@ async function callLlmJson(messages) {
   try {
     return parseLlmJson(content);
   } catch {
-    const repaired = await callLlm([
-      {
-        role: 'system',
-        content: '你是 JSON 修复器。只修复语法并输出合法 JSON，不改变字段含义，不输出 Markdown。',
-      },
-      { role: 'user', content },
-    ], { json: true, temperature: 0, maxTokens: 4096 });
-    return parseLlmJson(repaired);
+    try {
+      const repaired = await callLlm([
+        {
+          role: 'system',
+          content: '你是 JSON 修复器。只修复语法并输出合法 JSON，不改变字段含义，不输出 Markdown。',
+        },
+        { role: 'user', content },
+      ], { json: true, temperature: 0, maxTokens: 4096 });
+      return parseLlmJson(repaired);
+    } catch (e) {
+      throw new Error(`JSON 解析失败且修复也失败：${e.message}`);
+    }
   }
 }
 
