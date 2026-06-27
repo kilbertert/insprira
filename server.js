@@ -1758,7 +1758,7 @@ function bindSkillToSource(slug) {
   return { sourceKey: binding.sourceKey, cronId: binding.cronId, enabled: true, wasEnabled: false };
 }
 
-async function classifySkill(skill, retries = 2) {
+async function classifySkill(skill, retries = 3) {
   const signature = `${skill.slug}|${skill.title}|${String(skill.description || '').slice(0, 200)}`;
   const existing = db.prepare('SELECT * FROM skill_classifications WHERE slug = ?').get(skill.slug);
   if (existing && existing.skill_signature === signature) {
@@ -1767,38 +1767,32 @@ async function classifySkill(skill, retries = 2) {
   const messages = [
     {
       role: 'system',
-      content: `你是一个 Skill 分类器。根据 skill 的名称、标题、描述，把它归入以下五类之一：
-- 热点：抓取/聚合某个主题的内容榜单、热榜、信息源（如 AI 公众号信息源、抖音热点、阅读榜）
+      content: `你是一个 Skill 分类器。根据 skill 信息把它归入以下五类之一：
+- 热点：抓取/聚合某个主题的内容榜单、热榜、信息源
 - 创作：辅助内容创作的工具（如文案改写、风格转换、标题生成）
 - 分析：分析账号/内容/数据的工具（如账号诊断、爆款分析、趋势分析）
 - 检索：搜索关键词/账号/文章的工具
 - 生成工具：生成图片/视频/封面等媒体内容的工具
 
-你必须且只能从以上五类中选择一个，禁止输出平台名或其他任何类别名称。`,
+严格只输出：<slug>:<类别>（无空格，无其他内容）。禁止输出平台名、解释、XML 标签。`,
     },
     {
       role: 'user',
-      content: JSON.stringify({
-        instruction: '请从上述五类中选择一个最合适的类别，返回格式：{"category": "类别名"}',
-        skill: {
-          slug: skill.slug,
-          title: skill.title,
-          description: skill.description || '(无)',
-        },
-      }),
+      content: `技能名：${skill.slug}\n标题：${skill.title}\n描述：${skill.description || '(无)'}`,
     },
   ];
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      const data = await callLlmJson(messages);
-      let category = String(data?.category || '').trim();
+      const result = await callLlm(messages, { temperature: 0, maxTokens: 256 });
+      const raw = String(result || '').replace(/<[^>]+>/g, '').trim();
+      // 格式：<slug>:<类别>，取第一行
+      const line = raw.split('\n')[0].trim();
+      const colonIdx = line.lastIndexOf(':');
+      let category = colonIdx >= 0 ? line.slice(colonIdx + 1).trim() : line.trim();
       // 验证类别合法性，允许模糊匹配
       if (!LLM_SKILL_CATEGORIES.includes(category)) {
         for (const c of LLM_SKILL_CATEGORIES) {
-          if (category.includes(c) || c.includes(category)) {
-            category = c;
-            break;
-          }
+          if (category.includes(c) || c.includes(category)) { category = c; break; }
         }
       }
       if (LLM_SKILL_CATEGORIES.includes(category)) {
@@ -1819,7 +1813,7 @@ async function classifySkill(skill, retries = 2) {
     } catch (e) {
       const isRateLimit = e.message.includes('速率限制') || e.message.includes('429') || e.message.includes('rate limit');
       if (isRateLimit && attempt < retries) {
-        const delay = (attempt + 1) * 3000;
+        const delay = 15 * 1000 * (attempt + 1);
         console.warn(`[skill] 分类限速 ${skill.slug}，${delay}ms 后重试…`);
         await new Promise(r => setTimeout(r, delay));
         continue;
@@ -1829,6 +1823,102 @@ async function classifySkill(skill, retries = 2) {
     }
   }
   return existing?.llm_category || skill.category || '生成工具';
+}
+
+// 批量分类：一次 LLM 调用完成所有 skill，避免逐个调用触发限速
+async function classifyAllSkills(skills) {
+  if (!skills.length) return 0;
+  const needsClassify = [];
+  for (const skill of skills) {
+    const signature = `${skill.slug}|${skill.title}|${String(skill.description || '').slice(0, 200)}`;
+    const existing = db.prepare('SELECT * FROM skill_classifications WHERE slug = ?').get(skill.slug);
+    if (existing && existing.skill_signature === signature) continue;
+    needsClassify.push({ skill, signature });
+  }
+  if (!needsClassify.length) return 0;
+
+  // 分批：每批最多 20 个，减少 prompt 过长问题
+  const BATCH = 20;
+  let saved = 0;
+  for (let i = 0; i < needsClassify.length; i += BATCH) {
+    const batch = needsClassify.slice(i, i + BATCH);
+    const lines = batch.map(({ skill }) =>
+      `【${skill.slug}】标题：${skill.title}；描述：${(skill.description || '无').slice(0, 100)}`
+    ).join('\n');
+
+    const messages = [
+      {
+        role: 'system',
+        content: `你是一个 Skill 分类器。根据每个 skill 的名称、标题、描述，从以下五类中选择最合适的一个：
+- 热点：抓取/聚合某个主题的内容榜单、热榜、信息源
+- 创作：辅助内容创作的工具（如文案改写、风格转换、标题生成）
+- 分析：分析账号/内容/数据的工具（如账号诊断、爆款分析、趋势分析）
+- 检索：搜索关键词/账号/文章的工具
+- 生成工具：生成图片/视频/封面等媒体内容的工具
+
+严格只按以下格式输出（每行一个，无其他内容）：
+<slug>:<类别>
+禁止输出：解释、XML 标签、JSON。`,
+      },
+      { role: 'user', content: lines },
+    ];
+
+    let raw = '';
+    for (let attempt = 0; attempt <= 3; attempt++) {
+      try {
+        raw = await callLlm(messages, { temperature: 0, maxTokens: 4096 });
+        break;
+      } catch (e) {
+        const isRateLimit = e.message.includes('速率限制') || e.message.includes('429') || e.message.includes('rate limit');
+        if (isRateLimit && attempt < 3) {
+          const delay = 15 * 1000 * (attempt + 1);
+          console.warn(`[skill] 批量分类限速批次 ${i/BATCH+1}，${delay}ms 后重试…`);
+          await new Promise(r => setTimeout(r, delay));
+          continue;
+        }
+        console.warn(`[skill] 批量分类批次 ${i/BATCH+1} 失败:`, e.message);
+        break;
+      }
+    }
+
+    const resultMap = new Map();
+    for (const line of raw.replace(/<[^>]+>/g, '').split('\n')) {
+      const colonIdx = line.lastIndexOf(':');
+      if (colonIdx < 0) continue;
+      const slug = line.slice(0, colonIdx).trim();
+      const cat = line.slice(colonIdx + 1).trim();
+      if (slug) resultMap.set(slug, cat);
+    }
+
+    const now = Date.now();
+    const upsert = db.prepare(`
+      INSERT INTO skill_classifications (slug, llm_category, original_category, analyzed_at, skill_signature)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(slug) DO UPDATE SET
+        llm_category = excluded.llm_category,
+        original_category = excluded.original_category,
+        analyzed_at = excluded.analyzed_at,
+        skill_signature = excluded.skill_signature
+    `);
+
+    for (const { skill, signature } of batch) {
+      let category = resultMap.get(skill.slug) || '';
+      if (!LLM_SKILL_CATEGORIES.includes(category)) {
+        for (const c of LLM_SKILL_CATEGORIES) {
+          if (category.includes(c) || c.includes(category)) { category = c; break; }
+        }
+      }
+      if (LLM_SKILL_CATEGORIES.includes(category)) {
+        upsert.run(skill.slug, category, skill.category, now, signature);
+        saved++;
+      }
+    }
+    if (i + BATCH < needsClassify.length) {
+      await new Promise(r => setTimeout(r, 2000)); // 批次间稍作喘息
+    }
+  }
+  console.log(`[skill] 批量分类完成：${saved}/${needsClassify.length}`);
+  return saved;
 }
 
 function listSkills() {
@@ -2007,22 +2097,13 @@ with zipfile.ZipFile(sys.argv[1], 'r') as z:
         newSlugs: status.addedSlugs,
         newUntil: updatedAt + SKILLS_NEW_BADGE_MS,
       });
-      // 落库后自动对新/变更的 skill 进行 LLM 分类（已有缓存的会跳过）
+      // 落库后批量 LLM 分类（已有缓存签名的 skill 会自动跳过）
       try {
         const currentSkills = listSkills();
         const targets = status.addedSlugs.length
           ? currentSkills.filter(skill => status.addedSlugs.includes(skill.slug))
           : currentSkills;
-        let classified = 0;
-        for (const skill of targets) {
-          try {
-            await classifySkill(skill);
-            classified++;
-          } catch (e) {
-            console.warn(`[skill] 落库自动分类失败 ${skill.slug}:`, e.message);
-          }
-        }
-        console.log(`[skill] 落库自动分类完成：${classified}/${targets.length}`);
+        await classifyAllSkills(targets);
       } catch (e) {
         console.warn('[skill] 落库自动分类异常:', e.message);
       }
@@ -3628,17 +3709,12 @@ async function callLlmJson(messages) {
   try {
     return parseLlmJson(content);
   } catch {
+    // JSON 解析失败时，尝试去掉 XML 标签再解析一次
+    const stripped = String(content).replace(/<[^>]+>/g, '').trim();
     try {
-      const repaired = await callLlm([
-        {
-          role: 'system',
-          content: '你是 JSON 修复器。只修复语法并输出合法 JSON，不改变字段含义，不输出 Markdown。',
-        },
-        { role: 'user', content },
-      ], { json: true, temperature: 0, maxTokens: 4096 });
-      return parseLlmJson(repaired);
-    } catch (e) {
-      throw new Error(`JSON 解析失败且修复也失败：${e.message}`);
+      return parseLlmJson(stripped);
+    } catch {
+      throw new Error(`JSON 解析失败（已尝试去除 XML 标签）：${stripped.slice(0, 100)}`);
     }
   }
 }
@@ -5796,17 +5872,11 @@ async function handleLocalApi(req, res, url) {
     } catch (e) { json(res, 400, { ok: false, error: e.message }); }
     return true;
   }
-  // POST /api/_/skills/classify  批量调 LLM 分类所有 skill（用户主动触发）
+  // POST /api/_/skills/classify  批量 LLM 分类所有 skill（一次调用完成）
   if (url.pathname === '/api/_/skills/classify' && req.method === 'POST') {
     const all = listSkills();
-    let done = 0, failed = 0;
-    for (const skill of all) {
-      try {
-        await classifySkill(skill);
-        done++;
-      } catch { failed++; }
-    }
-    json(res, 200, { ok: true, data: { total: all.length, done, failed } });
+    const done = await classifyAllSkills(all);
+    json(res, 200, { ok: true, data: { total: all.length, done } });
     return true;
   }
   if (url.pathname === '/api/_/skills/status' && req.method === 'GET') {
