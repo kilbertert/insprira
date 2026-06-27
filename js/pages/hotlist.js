@@ -71,15 +71,15 @@ export async function renderHotlist() {
 
     if (kwResult?.length) {
       hotCache.hotKeyword = kwResult;
-      top.innerHTML = kwResult.slice(0, 6).map((kw, i) => {
+      top.innerHTML = kwResult.slice(0, 12).map((kw, i) => {
         const plats = kw.raw?.plats || [];
         return `
-        <div class="flex-shrink-0 w-44 flex items-center gap-2 p-2 bg-white/[0.02] rounded-lg card border border-white/5">
+        <div class="flex-shrink-0 w-36 flex items-center gap-1.5 px-2 py-1.5 bg-white/[0.02] rounded-lg card border border-white/5">
           ${rankBadge(i + 1)}
           <div class="flex-1 min-w-0">
             <div class="text-xs font-medium truncate leading-tight">${esc(kw.title)}</div>
-            <div class="flex items-center gap-1 mt-0.5 text-[9px] text-gray-500 flex-wrap">
-              ${plats.slice(0, 4).map(p => `<span class="flex items-center gap-0.5"><span class="platform-dot" style="background:${platColor(platCodeByName(p))}"></span>${esc(p)}</span>`).join(' ')}
+            <div class="flex items-center gap-1 mt-0.5 text-[9px] text-gray-500">
+              ${plats.slice(0, 3).map(p => `<span class="flex items-center gap-0.5"><span class="platform-dot" style="background:${platColor(platCodeByName(p))}"></span></span>`).join(' ')}
             </div>
           </div>
         </div>`;
