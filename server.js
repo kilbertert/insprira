@@ -906,14 +906,18 @@ async function getWersssAuthStatus() {
   if (!cfgRow.enabled) return { configured: true, enabled: false, message: 'WeRss 接入已禁用' };
   let token;
   let tokenRefreshed = false;
+  let tokenExpiresAt = cfgRow.token_expires_at || 0;
   try {
     const valid = await getValidWersssToken();
     token = valid.token;
     tokenRefreshed = !cfgRow.token || cfgRow.token !== token;
+    tokenExpiresAt = valid.config.tokenExpiresAt || tokenExpiresAt;
   } catch (e) {
     return { configured: true, enabled: true, tokenValid: false, message: `登录失败：${e.message}` };
   }
   const config = getWersssConfig();
+  const now = Date.now();
+  const tokenExpired = tokenExpiresAt > 0 && tokenExpiresAt - now <= 0;
   try {
     const status = await wersss.qrStatus(config.baseUrl, token);
     const loginStatus = Boolean(status?.login_status);
@@ -923,17 +927,23 @@ async function getWersssAuthStatus() {
     return {
       configured: true,
       enabled: true,
-      tokenValid: true,
+      tokenValid: !tokenExpired,
+      tokenExpired,
+      tokenExpiresAt,
       tokenRefreshed,
       wxAuthorized: loginStatus,
       hasQrCode: hasCode,
-      message: loginStatus ? '微信已授权' : '微信授权已过期，请扫码重新授权',
+      message: tokenExpired
+        ? 'Token 已过期，请点击「授权扫码」刷新'
+        : loginStatus ? '微信已授权' : '微信授权已过期，请扫码重新授权',
     };
   } catch (e) {
     return {
       configured: true,
       enabled: true,
       tokenValid: true,
+      tokenExpired: false,
+      tokenExpiresAt,
       wxAuthorized: false,
       message: `授权状态检测失败：${e.message}`,
     };
@@ -1748,7 +1758,7 @@ function bindSkillToSource(slug) {
   return { sourceKey: binding.sourceKey, cronId: binding.cronId, enabled: true, wasEnabled: false };
 }
 
-async function classifySkill(skill) {
+async function classifySkill(skill, retries = 2) {
   const signature = `${skill.slug}|${skill.title}|${String(skill.description || '').slice(0, 200)}`;
   const existing = db.prepare('SELECT * FROM skill_classifications WHERE slug = ?').get(skill.slug);
   if (existing && existing.skill_signature === signature) {
@@ -1773,35 +1783,48 @@ async function classifySkill(skill) {
       content: `slug: ${skill.slug}\n标题: ${skill.title}\n描述: ${skill.description || '(无)'}`,
     },
   ];
-  try {
-    const result = await callLlm(messages, { temperature: 0, maxTokens: 1024 });
-    const cleaned = String(result || '').trim().split(/[\n，,。]/)[0];
-    // 容错：如果模型输出平台名或不在五类中，尝试从输出里匹配最接近的类别
-    let category = LLM_SKILL_CATEGORIES.includes(cleaned) ? cleaned : null;
-    if (!category) {
-      for (const candidate of LLM_SKILL_CATEGORIES) {
-        if (cleaned.includes(candidate)) {
-          category = candidate;
-          break;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const result = await callLlm(messages, { temperature: 0, maxTokens: 1024 });
+      // 去掉 <thought> XML 标签和 Markdown 代码块
+      const raw = String(result || '').replace(/<[^>]+>/g, '').trim();
+      const cleaned = raw.split(/[\n，,。]/)[0].trim();
+      // 容错：如果模型输出平台名或不在五类中，尝试从输出里匹配最接近的类别
+      let category = LLM_SKILL_CATEGORIES.includes(cleaned) ? cleaned : null;
+      if (!category) {
+        for (const candidate of LLM_SKILL_CATEGORIES) {
+          if (cleaned.includes(candidate)) {
+            category = candidate;
+            break;
+          }
         }
       }
+      if (category) {
+        const now = Date.now();
+        db.prepare(`
+          INSERT INTO skill_classifications (slug, llm_category, original_category, analyzed_at, skill_signature)
+          VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT(slug) DO UPDATE SET
+            llm_category = excluded.llm_category,
+            original_category = excluded.original_category,
+            analyzed_at = excluded.analyzed_at,
+            skill_signature = excluded.skill_signature
+        `).run(skill.slug, category, skill.category, now, signature);
+        return category;
+      }
+      console.warn(`[skill] LLM 输出不在五类中 ${skill.slug}: ${cleaned}`);
+      break; // 非限速错误，不重试
+    } catch (e) {
+      const isRateLimit = e.message.includes('速率限制') || e.message.includes('429') || e.message.includes('rate limit');
+      if (isRateLimit && attempt < retries) {
+        const delay = (attempt + 1) * 3000;
+        console.warn(`[skill] 分类限速 ${skill.slug}，${delay}ms 后重试…`);
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+      console.warn(`[skill] 分类失败 ${skill.slug}:`, e.message);
+      break;
     }
-    if (category) {
-      const now = Date.now();
-      db.prepare(`
-        INSERT INTO skill_classifications (slug, llm_category, original_category, analyzed_at, skill_signature)
-        VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(slug) DO UPDATE SET
-          llm_category = excluded.llm_category,
-          original_category = excluded.original_category,
-          analyzed_at = excluded.analyzed_at,
-          skill_signature = excluded.skill_signature
-      `).run(skill.slug, category, skill.category, now, signature);
-      return category;
-    }
-    console.warn(`[skill] LLM 输出不在五类中 ${skill.slug}: ${cleaned}`);
-  } catch (e) {
-    console.warn(`[skill] 分类失败 ${skill.slug}:`, e.message);
   }
   return existing?.llm_category || skill.category || '生成工具';
 }
