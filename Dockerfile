@@ -34,4 +34,4 @@ VOLUME ["/data"]
 # 默认监听端口
 EXPOSE 8080
 
-CMD ["node", "server.js"]
+CMD ["node", "--watch", "server.js"]
