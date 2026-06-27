@@ -1967,9 +1967,14 @@ async function updateCommunitySkills() {
       );
       if (!response.ok) throw new Error(`Skill 下载失败：HTTP ${response.status}`);
       fs.writeFileSync(archivePath, Buffer.from(await response.arrayBuffer()));
-      await execFileAsync('unzip', ['-q', archivePath, '-d', extractRoot], {
+      // Python zipfile 支持 UTF-8 文件名，避免系统 unzip 中文名乱码
+      await execFileAsync('python3', ['-c', `
+import zipfile, sys
+with zipfile.ZipFile(sys.argv[1], 'r') as z:
+    z.extractall(sys.argv[2])
+`, archivePath, extractRoot], {
         timeout: 60000,
-        maxBuffer: 2 * 1024 * 1024,
+        maxBuffer: 4 * 1024 * 1024,
       });
       const extractedRepo = fs.readdirSync(extractRoot, { withFileTypes: true })
         .find(entry => entry.isDirectory());
