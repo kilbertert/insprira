@@ -18,3 +18,4 @@ services:
       - ./server.js:/app/server.js:ro
       - ./kb_wersss.js:/app/kb_wersss.js:ro
       - ./js:/app/js:ro
+      - ./index.html:/app/index.html:ro
