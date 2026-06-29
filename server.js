@@ -13,6 +13,10 @@ const { scanVault, readEntry, writeNote, updateNote, deleteNote, listFolders, li
 const { searchPages, getPage, createPage, updatePage, deletePage } = require('./kb_notion');
 const wersss = require('./kb_wersss');
 
+const APP_VERSION = (() => {
+  try { return require('./package.json').version || '0.0.0'; } catch { return '0.0.0'; }
+})();
+
 const execFileAsync = promisify(execFile);
 
 function loadEnvFile(filePath) {
@@ -5936,6 +5940,7 @@ async function handleLocalApi(req, res, url) {
     const auth = currentSession(req);
     json(res, 200, {
       ok: true,
+      version: APP_VERSION,
       redfoxConfigured: Boolean(API_KEY),
       llmConfigured: Boolean(process.env.LLM_API_KEY),
       schedulerEnabled: ENABLE_SCHEDULER,
@@ -5943,6 +5948,11 @@ async function handleLocalApi(req, res, url) {
       authenticated: Boolean(auth),
       user: auth ? publicUser(auth.user) : null,
     });
+    return true;
+  }
+  // /api/_/version 必须放在鉴权白名单之前（公开）
+  if (url.pathname === '/api/_/version' && req.method === 'GET') {
+    json(res, 200, { ok: true, version: APP_VERSION });
     return true;
   }
   if (url.pathname === '/api/_/redfox/apply' && req.method === 'GET') {
@@ -7307,7 +7317,7 @@ const server = http.createServer(async (req, res) => {
   res.setHeader('Referrer-Policy', 'same-origin');
   const url = new URL(req.url, `http://${req.headers.host || `${HOST}:${PORT}`}`);
   try {
-    const publicApi = url.pathname === '/api/_/login' || url.pathname === '/api/_/status';
+    const publicApi = url.pathname === '/api/_/login' || url.pathname === '/api/_/status' || url.pathname === '/api/_/version';
     if (url.pathname.startsWith('/api/') && !publicApi && !isAuthorized(req)) {
       json(res, 401, { ok: false, error: '请先登录' });
       return;

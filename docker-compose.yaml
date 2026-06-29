@@ -16,6 +16,7 @@ services:
       - ./data:/data
       - ./.env:/app/.env:ro
       - ./server.js:/app/server.js:ro
+      - ./package.json:/app/package.json:ro
       - ./kb_wersss.js:/app/kb_wersss.js:ro
       - ./js:/app/js:ro
       - ./index.html:/app/index.html:ro

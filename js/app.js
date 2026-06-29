@@ -31,10 +31,25 @@ registerItemCacheHandlers({
 
 initErrorBoundary();
 
+// 页面加载即拉版本号，更新侧边栏（登录前也显示）
+localApi('version').then(r => {
+  if (r?.version) applyAppVersion(r.version);
+}).catch(() => {});
+
 window.addEventListener('popstate', (e) => {
   const hash = location.hash.replace('#', '') || 'dashboard';
   gotoPage(hash, { updateHistory: false });
 });
+
+// 在页面加载时立即拉版本号（侧边栏在登录前就显示）
+function applyAppVersion(version) {
+  const tag = document.querySelector('.sidebar-brand-text .text-\\[10px\\]');
+  if (tag) tag.textContent = `v${version} · 真实数据`;
+  const footer = document.querySelector('.sidebar-footer p');
+  if (footer) footer.textContent = footer.textContent.replace(/v\d+\.\d+\.\d+/, `v${version}`);
+  const brandTitle = document.querySelector('.sidebar-brand-text .font-bold');
+  if (brandTitle) brandTitle.setAttribute('title', `灵感熔炉 v${version}`);
+}
 
 function activateApp() {
   document.getElementById('page-login').classList.remove('active');
@@ -42,6 +57,9 @@ function activateApp() {
   const hashPage = location.hash.replace('#', '');
   const initialPage = !hashPage || hashPage === 'login' ? 'dashboard' : hashPage;
   gotoPage(initialPage, { replaceHistory: true });
+  localApi('version').then(r => {
+    if (r?.version) applyAppVersion(r.version);
+  }).catch(() => {});
   syncTrackersFromServer().then(() => {
     const navCount = document.getElementById('nav-tracker-count');
     if (navCount) navCount.textContent = LS.get('trackers', []).length;
