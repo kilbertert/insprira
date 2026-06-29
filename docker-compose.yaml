@@ -1,6 +1,6 @@
 services:
   insprira:
-    image: ghcr.io/coracoo/insprira:v0.1.7
+    image: ghcr.io/coracoo/insprira:latest
     container_name: insprira
     restart: unless-stopped
     ports:
