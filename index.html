@@ -5,13 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>灵感熔炉 · insprira</title>
 <link rel="icon" href="data:," />
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js" defer integrity="sha384-e6nUZLBkQ86NJ6TVVKAeSaK8jWa3NhkYWZFomE39AvDbQWeie9PlQqM3pmYW5d1g" crossorigin="anonymous"></script>
-<script src="https://unpkg.com/lucide@1.18.0/dist/umd/lucide.min.js" defer integrity="sha384-UUwTS+RNYj0wSOgt4wIqWyG4Rc/xvrqgHDg/fEwc2e6WEFUooChoVCwkcddDnMaL" crossorigin="anonymous"></script>
-<script src="https://cdn.jsdelivr.net/npm/marked@15.0.12/marked.min.js" defer integrity="sha384-948ahk4ZmxYVYOc+rxN1H2gM1EJ2Duhp7uHtZ4WSLkV4Vtx5MUqnV+l7u9B+jFv+" crossorigin="anonymous"></script>
-<script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.6/dist/purify.min.js" defer integrity="sha384-JEyTNhjM6R1ElGoJns4U2Ln4ofPcqzSsynQkmEc/KGy6336qAZl70tDLufbkla+3" crossorigin="anonymous"></script>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<script src="vendor/chart.umd.min.js" defer></script>
+<script src="vendor/lucide.min.js" defer></script>
+<script src="vendor/marked.min.js" defer></script>
+<script src="vendor/purify.min.js" defer></script>
 <link rel="stylesheet" href="css/tailwind.css" />
 <link rel="stylesheet" href="css/styles.css" />
 </head>
@@ -828,6 +825,13 @@
     <div>
       <div class="page-header-title"><i data-lucide="settings" class="w-5 h-5 text-purple-400"></i>设置</div>
       <div class="page-header-sub">API Key、定时任务、通知渠道与自动选题配置</div>
+    </div>
+  </div>
+  <div id="kb-insecure-banner" class="hidden bg-red-500/10 border border-red-500/40 rounded-xl p-4 flex items-start gap-3">
+    <i data-lucide="alert-triangle" class="w-5 h-5 text-red-400 flex-shrink-0 mt-0.5"></i>
+    <div class="min-w-0">
+      <div class="font-semibold text-red-300">知识库加密未启用</div>
+      <div class="text-xs text-red-200/80 mt-1"><code class="text-red-200">KB_ENCRYPTION_KEY</code> 未配置，Notion 等知识库凭证使用默认弱密钥加密，<b>cache.db 一旦泄漏即等于凭证泄漏</b>。请在 <code class="text-red-200">.env</code> 设置 <code class="text-red-200">KB_ENCRYPTION_KEY</code>（生成命令：<code class="text-red-200">openssl rand -hex 32</code>），重启服务生效。</div>
     </div>
   </div>
   <div class="grid grid-cols-1 xl:grid-cols-3 gap-5 items-stretch">

@@ -60,3 +60,5 @@ dist/
 build/
 *.min.js
 *.min.css.map
+# vendor/ 是本地化的第三方库，需要 commit
+!vendor/*.min.js

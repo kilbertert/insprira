@@ -13,25 +13,24 @@ const { scanVault, readEntry, writeNote, updateNote, deleteNote, listFolders, li
 const { searchPages, getPage, createPage, updatePage, deletePage } = require('./kb_notion');
 const wersss = require('./kb_wersss');
 
+const {
+  parseJson, stableObject, toNumber, localDate, dateDaysAgo, dateFromYmd,
+  workPublishAt, workContentKey, gitBlobSha, parseAgentJsonLines,
+} = require('./lib/utils');
+const { parseCronExpr, validateCronField, nextCronTime, matchesCronField } = require('./lib/cron-parser');
+const {
+  PASSWORD_SCRYPT_OPTIONS, hashPassword, verifyPassword, validateUsername, validatePassword,
+} = require('./lib/password');
+const {
+  EDITABLE_ENV_KEYS, loadEnvFile, readEnvValues, publicEnvConfig, updateEnvConfig, restartCurrentService,
+} = require('./lib/env');
+const { serveStatic: serveStaticFromLib } = require('./lib/static');
+
 const APP_VERSION = (() => {
   try { return require('./package.json').version || '0.0.0'; } catch { return '0.0.0'; }
 })();
 
 const execFileAsync = promisify(execFile);
-
-function loadEnvFile(filePath) {
-  if (!fs.existsSync(filePath)) return;
-  const lines = fs.readFileSync(filePath, 'utf8').split(/\r?\n/);
-  for (const line of lines) {
-    const match = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
-    if (!match || process.env[match[1]] != null) continue;
-    let value = match[2];
-    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-      value = value.slice(1, -1);
-    }
-    process.env[match[1]] = value;
-  }
-}
 
 const ENV_FILE = path.join(__dirname, '.env');
 loadEnvFile(ENV_FILE);
@@ -49,9 +48,10 @@ const CLAUDE_BIN = process.env.CLAUDE_BIN || 'claude';
 const KIMI_BIN = process.env.KIMI_BIN || 'kimi';
 const OPENCLAW_BIN = process.env.OPENCLAW_BIN || 'openclaw';
 const HERMES_BIN = process.env.HERMES_BIN || 'hermes';
-const SKILLS_ROOT = process.env.DATA_DIR
-  ? path.join(process.env.DATA_DIR, 'skills', 'redfox-community', 'skills')
-  : path.join(__dirname, 'skills', 'redfox-community', 'skills');
+const DATA_ROOT = process.env.DATA_DIR
+  ? path.resolve(process.env.DATA_DIR)
+  : path.join(__dirname, 'data');
+const SKILLS_ROOT = path.join(DATA_ROOT, 'skills', 'redfox-community', 'skills');
 const SKILLS_REPO_ROOT = path.dirname(SKILLS_ROOT);
 const SKILLS_GITHUB_REPO = 'redfox-data/redfox-community';
 const SKILLS_NEW_BADGE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -59,77 +59,8 @@ const WECHAT_ANALYZER_ROOT = path.join(SKILLS_ROOT, 'wechat-account-analyzer');
 const DOUYIN_ANALYZER_ROOT = path.join(SKILLS_ROOT, 'douyin-account-diagnosis');
 const XHS_ANALYZER_ROOT = path.join(SKILLS_ROOT, 'xiaohongshu-account-analyzer');
 const sessions = new Map();
-const EDITABLE_ENV_KEYS = [
-  'REDFOX_API_KEY', 'REDFOX_WEB_COOKIE', 'LLM_BASE_URL', 'LLM_API_KEY', 'LLM_MODEL',
-  'KB_ENCRYPTION_KEY', 'ENABLE_SCHEDULER',
-];
 const DEFAULT_USERNAME = 'admin';
 const DEFAULT_PASSWORD = '123456';
-const PASSWORD_SCRYPT_OPTIONS = { N: 16384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 };
-
-function readEnvValues() {
-  const values = {};
-  if (!fs.existsSync(ENV_FILE)) return values;
-  for (const line of fs.readFileSync(ENV_FILE, 'utf8').split(/\r?\n/)) {
-    const match = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
-    if (!match) continue;
-    values[match[1]] = match[2].replace(/^(['"])(.*)\1$/, '$2');
-  }
-  return values;
-}
-
-function publicEnvConfig() {
-  const values = readEnvValues();
-  return Object.fromEntries(EDITABLE_ENV_KEYS.map(key => [key, {
-    configured: Boolean(values[key]),
-    value: /KEY|PASSWORD|COOKIE/.test(key) ? '' : (values[key] || ''),
-    secret: /KEY|PASSWORD|COOKIE/.test(key),
-  }]));
-}
-
-function updateEnvConfig(input) {
-  const existing = fs.existsSync(ENV_FILE) ? fs.readFileSync(ENV_FILE, 'utf8').split(/\r?\n/) : [];
-  const updates = new Map();
-  for (const key of EDITABLE_ENV_KEYS) {
-    if (!Object.hasOwn(input, key)) continue;
-    const value = String(input[key] ?? '').trim();
-    if (!value && /KEY|PASSWORD|COOKIE/.test(key)) continue;
-    updates.set(key, value);
-  }
-  const seen = new Set();
-  const lines = existing.map(line => {
-    const match = line.match(/^\s*([A-Z0-9_]+)\s*=/);
-    if (!match || !updates.has(match[1])) return line;
-    seen.add(match[1]);
-    return `${match[1]}=${updates.get(match[1]).replace(/\r?\n/g, '')}`;
-  });
-  for (const [key, value] of updates) {
-    if (!seen.has(key)) lines.push(`${key}=${value.replace(/\r?\n/g, '')}`);
-  }
-  fs.writeFileSync(ENV_FILE, `${lines.join('\n').replace(/\n+$/, '')}\n`, { mode: 0o600 });
-  fs.chmodSync(ENV_FILE, 0o600);
-  return publicEnvConfig();
-}
-
-function restartCurrentService() {
-  setTimeout(() => {
-    if (process.env.FURNACE_RESTART_CMD) {
-      const [cmd, ...args] = process.env.FURNACE_RESTART_CMD.split(/\s+/);
-      spawn(cmd, args, { detached: true, stdio: 'ignore' }).unref();
-      return;
-    }
-    const isSystemd = fs.existsSync('/run/systemd/system') || fs.existsSync(path.join(os.homedir(), '.config/systemd/user/insprira.service'));
-    if (isSystemd) {
-      spawn('systemctl', ['--user', 'restart', 'insprira.service'], {
-        detached: true,
-        stdio: 'ignore',
-      }).unref();
-      return;
-    }
-    console.warn('[restart] 未检测到 systemd 服务，进程将退出。请用外层管理器（pm2 / systemd / npm start / nohup）重启。');
-    process.exit(0);
-  }, 500);
-}
 
 function sessionSet(token, userId, expiresAt) {
   const session = { userId, expiresAt };
@@ -244,12 +175,8 @@ const CACHE_TTL = {
 
 const DB_PATH = process.env.CACHE_DB_PATH
   ? path.resolve(process.env.CACHE_DB_PATH)
-  : process.env.DATA_DIR
-    ? path.join(process.env.DATA_DIR, 'cache.db')
-    : path.join(__dirname, 'cache.db');
-if (process.env.DATA_DIR) {
-  try { fs.mkdirSync(process.env.DATA_DIR, { recursive: true }); } catch {}
-}
+  : path.join(DATA_ROOT, 'cache.db');
+try { fs.mkdirSync(DATA_ROOT, { recursive: true }); } catch {}
 const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
@@ -595,23 +522,6 @@ function ensureColumn(table, column, definition) {
   }
 }
 
-function workPublishAt(work) {
-  const raw = work.publishTime || work.workPublishTime || work.createTime || work.publicTime || '';
-  const numeric = typeof raw === 'number' ? raw : Number(String(raw).trim());
-  const value = Number.isFinite(numeric) && String(raw).trim() !== ''
-    ? numeric
-    : Date.parse(String(raw).replace(/-/g, '/'));
-  if (!Number.isFinite(value)) return 0;
-  return value < 1e12 ? value * 1000 : value;
-}
-
-function workContentKey(work) {
-  return crypto.createHash('sha1').update([
-    String(work.title || '').trim().toLowerCase(),
-    String(work.publishTime || work.workPublishTime || work.createTime || work.publicTime || ''),
-  ].join('\n')).digest('hex');
-}
-
 ensureColumn('tracked_accounts', 'group_name', "TEXT NOT NULL DEFAULT '其他'");
 ensureColumn('inspirations', 'source_items', 'TEXT');
 ensureColumn('inspirations', 'kb_link', 'TEXT');
@@ -817,45 +727,6 @@ function getCookies(req) {
     if (index > 0) cookies[part.slice(0, index).trim()] = decodeURIComponent(part.slice(index + 1).trim());
     return cookies;
   }, {});
-}
-
-function hashPassword(password, salt = crypto.randomBytes(16)) {
-  const saltBuffer = Buffer.isBuffer(salt) ? salt : Buffer.from(String(salt), 'hex');
-  const derived = crypto.scryptSync(String(password), saltBuffer, 64, PASSWORD_SCRYPT_OPTIONS);
-  return `scrypt$${PASSWORD_SCRYPT_OPTIONS.N}$${PASSWORD_SCRYPT_OPTIONS.r}$${PASSWORD_SCRYPT_OPTIONS.p}$${saltBuffer.toString('hex')}$${derived.toString('hex')}`;
-}
-
-function verifyPassword(password, encoded) {
-  const [scheme, n, r, p, saltHex, hashHex] = String(encoded || '').split('$');
-  if (scheme !== 'scrypt' || !saltHex || !hashHex) return false;
-  try {
-    const expected = Buffer.from(hashHex, 'hex');
-    const actual = crypto.scryptSync(String(password), Buffer.from(saltHex, 'hex'), expected.length, {
-      N: Number(n),
-      r: Number(r),
-      p: Number(p),
-      maxmem: PASSWORD_SCRYPT_OPTIONS.maxmem,
-    });
-    return expected.length === actual.length && crypto.timingSafeEqual(expected, actual);
-  } catch {
-    return false;
-  }
-}
-
-function validateUsername(value) {
-  const username = String(value || '').trim();
-  if (!/^[\p{L}\p{N}_.-]{3,32}$/u.test(username)) {
-    throw new Error('用户名需为 3-32 位字母、数字、中文、点、下划线或短横线');
-  }
-  return username;
-}
-
-function validatePassword(value) {
-  const password = String(value || '');
-  if (password.length < 6 || password.length > 128) {
-    throw new Error('密码长度需为 6-128 位');
-  }
-  return password;
 }
 
 function initializeDefaultUser() {
@@ -1419,8 +1290,9 @@ function isAuthorized(req) {
 
 const KB_ENC_ALGO = 'aes-256-gcm';
 const KB_ENC_KEY_SRC = process.env.KB_ENCRYPTION_KEY;
-if (!KB_ENC_KEY_SRC) {
-  console.warn('[security] 未配置 KB_ENCRYPTION_KEY，知识库凭证使用内置默认密钥加密，安全性不足。请在 .env 设置 KB_ENCRYPTION_KEY（生成命令：openssl rand -hex 32；已有数据库设置后请勿修改）');
+const KB_ENC_INSECURE = !KB_ENC_KEY_SRC;
+if (KB_ENC_INSECURE) {
+  console.error('[security] KB_ENCRYPTION_KEY 未配置。知识库凭证使用默认弱密钥加密，cache.db 泄漏即等于凭证泄漏。请在 .env 设置 KB_ENCRYPTION_KEY（生成命令：openssl rand -hex 32；已有数据库设置后请勿修改）');
 }
 const KB_ENC_KEY = crypto.createHash('sha256').update(String(KB_ENC_KEY_SRC || 'furnace-kb-key')).digest();
 
@@ -1511,15 +1383,6 @@ function invalidateKbEntryCache(sourceType, entryKey) {
   db.prepare('DELETE FROM kb_entries_cache WHERE cache_key = ?').run(`entry:${sourceType}:${entryKey}`);
 }
 
-function parseJson(text) {
-  if (!text) return {};
-  try {
-    return JSON.parse(text);
-  } catch {
-    return null;
-  }
-}
-
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let body = '';
@@ -1537,15 +1400,6 @@ function readBody(req) {
     });
     req.on('error', reject);
   });
-}
-
-function stableObject(value) {
-  if (Array.isArray(value)) return value.map(stableObject);
-  if (!value || typeof value !== 'object') return value;
-  return Object.keys(value).sort().reduce((result, key) => {
-    result[key] = stableObject(value[key]);
-    return result;
-  }, {});
 }
 
 function getCacheKey(endpoint, query, body) {
@@ -2081,13 +1935,6 @@ function getSkill(slug) {
   return { ...skill, isNew: skillUpdateState().newSlugs.has(skill.slug) };
 }
 
-function gitBlobSha(content) {
-  const body = Buffer.isBuffer(content) ? content : Buffer.from(content);
-  return crypto.createHash('sha1')
-    .update(Buffer.concat([Buffer.from(`blob ${body.length}\0`), body]))
-    .digest('hex');
-}
-
 function localSkillManifest() {
   const files = new Map();
   if (!fs.existsSync(SKILLS_ROOT)) return files;
@@ -2371,13 +2218,6 @@ function findNestedString(value, key) {
   return '';
 }
 
-function parseAgentJsonLines(output, role = 'assistant') {
-  const events = String(output || '').split(/\r?\n/)
-    .map(line => parseJson(line))
-    .filter(Boolean);
-  const messages = events.filter(event => event.role === role && typeof event.content === 'string');
-  return messages.length ? messages[messages.length - 1].content.trim() : '';
-}
 
 async function listLocalAgents() {
   const agents = [];
@@ -2750,32 +2590,6 @@ function usageSummary() {
       GROUP BY endpoint ORDER BY calls DESC LIMIT 8
     `).all(now - 30 * 24 * 60 * 60 * 1000),
   };
-}
-
-function localDate(date = new Date()) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-}
-
-function dateDaysAgo(days) {
-  const date = new Date();
-  date.setDate(date.getDate() - days);
-  return localDate(date);
-}
-
-function dateFromYmd(value, offsetDays) {
-  const date = new Date(`${value}T12:00:00`);
-  if (Number.isNaN(date.getTime())) return value;
-  date.setDate(date.getDate() + offsetDays);
-  return localDate(date);
-}
-
-function toNumber(value) {
-  if (value == null || value === '') return null;
-  const number = Number(value);
-  return Number.isFinite(number) ? number : null;
 }
 
 function normalizeSnapshotItems(platform, data) {
@@ -6016,6 +5830,7 @@ async function handleLocalApi(req, res, url) {
       authRequired: true,
       authenticated: Boolean(auth),
       user: auth ? publicUser(auth.user) : null,
+      kbEncryptionInsecure: KB_ENC_INSECURE,
     });
     return true;
   }
@@ -6100,12 +5915,12 @@ async function handleLocalApi(req, res, url) {
     return true;
   }
   if (url.pathname === '/api/_/env' && req.method === 'GET') {
-    json(res, 200, { ok: true, data: publicEnvConfig() });
+    json(res, 200, { ok: true, data: publicEnvConfig(ENV_FILE) });
     return true;
   }
   if (url.pathname === '/api/_/env' && req.method === 'PUT') {
     const { data } = await readBody(req);
-    json(res, 200, { ok: true, data: updateEnvConfig(data || {}), restartRequired: true });
+    json(res, 200, { ok: true, data: updateEnvConfig(ENV_FILE, data || {}), restartRequired: true });
     return true;
   }
   if (url.pathname === '/api/_/service/restart' && req.method === 'POST') {
@@ -7351,34 +7166,7 @@ ${keywordsList}
 }
 
 function serveStatic(res, pathname) {
-  const relative = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '');
-  const filePath = path.resolve(__dirname, relative);
-  if (filePath !== __dirname && !filePath.startsWith(`${__dirname}${path.sep}`)) {
-    json(res, 403, { ok: false, error: 'Forbidden' });
-    return;
-  }
-  const ext = path.extname(filePath).toLowerCase();
-  const mime = {
-    '.html': 'text/html; charset=utf-8',
-    '.js': 'application/javascript; charset=utf-8',
-    '.css': 'text/css; charset=utf-8',
-    '.json': 'application/json; charset=utf-8',
-    '.png': 'image/png',
-    '.jpg': 'image/jpeg',
-    '.jpeg': 'image/jpeg',
-    '.webp': 'image/webp',
-    '.svg': 'image/svg+xml',
-    '.ico': 'image/x-icon',
-  }[ext] || 'application/octet-stream';
-  fs.readFile(filePath, (error, content) => {
-    if (error) {
-      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
-      res.end('Not found');
-      return;
-    }
-    res.writeHead(200, { 'Content-Type': mime });
-    res.end(content);
-  });
+  serveStaticFromLib(__dirname, res, pathname);
 }
 
 const server = http.createServer(async (req, res) => {
@@ -7447,75 +7235,6 @@ setInterval(sessionClean, 60 * 60 * 1000).unref();
 // ========== CRON 调度器 ==========
 const cronTimers = new Map(); // id -> timeout ref
 const activeCronRuns = new Map();
-
-function parseCronExpr(expr) {
-  const parts = expr.trim().split(/\s+/);
-  if (parts.length !== 5) return null;
-  const cron = {
-    min: parts[0], hour: parts[1], dom: parts[2], month: parts[3], dow: parts[4],
-  };
-  const specs = [
-    [cron.min, 0, 59],
-    [cron.hour, 0, 23],
-    [cron.dom, 1, 31],
-    [cron.month, 1, 12],
-    [cron.dow, 0, 7],
-  ];
-  return specs.every(([field, min, max]) => validateCronField(field, min, max)) ? cron : null;
-}
-
-function validateCronField(field, min, max) {
-  return field.split(',').every(part => {
-    const pieces = part.split('/');
-    if (pieces.length > 2) return false;
-    const [base, rawStep] = pieces;
-    if (rawStep !== undefined && (!/^\d+$/.test(rawStep) || Number(rawStep) < 1)) return false;
-    if (base === '*') return true;
-    if (/^\d+$/.test(base)) {
-      const value = Number(base);
-      return value >= min && value <= max;
-    }
-    const range = base.match(/^(\d+)-(\d+)$/);
-    if (!range) return false;
-    const start = Number(range[1]);
-    const end = Number(range[2]);
-    return start >= min && end <= max && start <= end;
-  });
-}
-
-function nextCronTime(cron, from = new Date()) {
-  const c = parseCronExpr(cron);
-  if (!c) return null;
-  let d = new Date(from.getTime());
-  d.setSeconds(0, 0);
-  for (let i = 0; i < 366 * 24 * 60; i++) {
-    d.setMinutes(d.getMinutes() + 1);
-    const domMatches = matchesCronField(d.getDate(), c.dom);
-    const dowMatches = matchesCronField(d.getDay(), c.dow, true);
-    const dayMatches = c.dom !== '*' && c.dow !== '*' ? domMatches || dowMatches : domMatches && dowMatches;
-    if (matchesCronField(d.getMinutes(), c.min) &&
-        matchesCronField(d.getHours(), c.hour) &&
-        dayMatches &&
-        matchesCronField(d.getMonth() + 1, c.month)) {
-      return d;
-    }
-  }
-  return null;
-}
-
-function matchesCronField(val, field, sundaySeven = false) {
-  const values = sundaySeven && val === 0 ? [0, 7] : [val];
-  return field.split(',').some(part => {
-    const [base, rawStep] = part.split('/');
-    const step = rawStep ? Number(rawStep) : 1;
-    if (base === '*') return values.some(value => value % step === 0);
-    if (base.includes('-')) {
-      const [start, end] = base.split('-').map(Number);
-      return values.some(value => value >= start && value <= end && (value - start) % step === 0);
-    }
-    return values.includes(Number(base));
-  });
-}
 
 function describeCronResult(taskType, result) {
   if (!result || typeof result !== 'object') return '';
@@ -7725,7 +7444,10 @@ module.exports = {
   stableObject,
   listSkills,
   parseCronExpr,
+  validateCronField,
   nextCronTime,
+  matchesCronField,
+  getCacheKey,
   workPublishAt,
   workContentKey,
   normalizeExternalInspirationItems,

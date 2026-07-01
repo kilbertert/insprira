@@ -17,25 +17,38 @@
 
 ## 启动
 
-需 Node.js ≥ 20 或 Docker。
+需 Node.js ≥ 20 或 Docker。**推荐用 Docker dev 工作流**——源码挂载 + `node --watch` 改代码即热重启。
 
-### Docker
+### Docker dev（推荐）
 
 ```bash
 cp .env.example .env
 # 填写 .env
+docker compose -f docker-compose.yaml -f docker-compose.dev.yaml up
+```
+
+数据落在 `./data/`（与生产编排一致）。改 `server.js` / `js/*` / `index.html` 等会自动重启或刷新。
+
+### Docker 生产
+
+```bash
+cp .env.example .env
 docker compose up -d
 ```
 
 镜像：[`ghcr.io/coracoo/insprira`](https://github.com/coracoo/insprira/pkgs/container/insprira)
 
-### 本地
+### 本地 npm（无 Docker 备选）
 
 ```bash
 npm install
 cp .env.example .env
-npm start
+npm run dev    # node --watch，热重启
+# 或
+npm start      # 一次性启动
 ```
+
+数据默认落在 `./data/`（与 Docker 一致）。
 
 ## 配置
 

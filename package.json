@@ -5,6 +5,7 @@
   "type": "commonjs",
   "scripts": {
     "start": "node server.js",
+    "dev": "node --watch server.js",
     "build": "npm run build:css",
     "build:css": "tailwindcss -i ./css/tailwind-input.css -o ./css/tailwind.css --minify",
     "check": "node --check server.js",

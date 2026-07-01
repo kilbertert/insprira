@@ -13,6 +13,8 @@ export async function renderSettings() {
     if (!document.getElementById('api-detail')) return;
     window._inspirationConfigs = configs;
     renderInspirationConfigs();
+    const kbBanner = document.getElementById('kb-insecure-banner');
+    if (kbBanner) kbBanner.classList.toggle('hidden', !status.kbEncryptionInsecure);
     const pill = document.getElementById('api-status-pill');
     if (!pill) return;
     pill.className = `pill ${status.redfoxConfigured ? 'pill-green' : 'pill-hot'}`;
