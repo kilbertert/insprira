@@ -25,6 +25,23 @@ const {
   EDITABLE_ENV_KEYS, loadEnvFile, readEnvValues, publicEnvConfig, updateEnvConfig, restartCurrentService,
 } = require('./lib/env');
 const { serveStatic: serveStaticFromLib } = require('./lib/static');
+const {
+  REDFOX_HOST, REDFOX_PATH_PREFIX, API_KEY,
+  REDFOX_ENDPOINTS, CACHE_TTL, AI_FEED_PLATFORMS,
+  getCacheKey, getCached, isCacheableRedfoxResponse, setCache, logApiUsage,
+  redfoxRequest, redfoxData, redfoxGetData,
+} = require('./lib/redfox');
+const {
+  sessions, sessionSet, sessionDel, sessionGet, sessionClean,
+  getCookies, publicUser, currentSession, isAuthorized,
+  KB_ENC_INSECURE, encryptKb, decryptKb,
+} = require('./lib/auth');
+const {
+  HOTSPOT_LISTS,
+  normalizeSnapshotItems,
+  normalizeHotspots,
+  normalizeRealtimeHotspots,
+} = require('./lib/normalize');
 
 const APP_VERSION = (() => {
   try { return require('./package.json').version || '0.0.0'; } catch { return '0.0.0'; }
@@ -37,9 +54,6 @@ loadEnvFile(ENV_FILE);
 
 const PORT = Number(process.env.PORT || 8080);
 const HOST = process.env.HOST || '0.0.0.0';
-const API_KEY = process.env.REDFOX_API_KEY || '';
-const REDFOX_HOST = process.env.REDFOX_HOST || 'redfox.hk';
-const REDFOX_PATH_PREFIX = '/story/api/';
 const ENABLE_SCHEDULER = process.env.ENABLE_SCHEDULER !== 'false';
 const MAX_BODY_SIZE = 2 * 1024 * 1024;
 const REDFOX_WEB_COOKIE = process.env.REDFOX_WEB_COOKIE || '';
@@ -48,9 +62,7 @@ const CLAUDE_BIN = process.env.CLAUDE_BIN || 'claude';
 const KIMI_BIN = process.env.KIMI_BIN || 'kimi';
 const OPENCLAW_BIN = process.env.OPENCLAW_BIN || 'openclaw';
 const HERMES_BIN = process.env.HERMES_BIN || 'hermes';
-const DATA_ROOT = process.env.DATA_DIR
-  ? path.resolve(process.env.DATA_DIR)
-  : path.join(__dirname, 'data');
+const { db, ensureColumn, DATA_ROOT } = require('./lib/db');
 const SKILLS_ROOT = path.join(DATA_ROOT, 'skills', 'redfox-community', 'skills');
 const SKILLS_REPO_ROOT = path.dirname(SKILLS_ROOT);
 const SKILLS_GITHUB_REPO = 'redfox-data/redfox-community';
@@ -58,491 +70,12 @@ const SKILLS_NEW_BADGE_MS = 7 * 24 * 60 * 60 * 1000;
 const WECHAT_ANALYZER_ROOT = path.join(SKILLS_ROOT, 'wechat-account-analyzer');
 const DOUYIN_ANALYZER_ROOT = path.join(SKILLS_ROOT, 'douyin-account-diagnosis');
 const XHS_ANALYZER_ROOT = path.join(SKILLS_ROOT, 'xiaohongshu-account-analyzer');
-const sessions = new Map();
 const DEFAULT_USERNAME = 'admin';
 const DEFAULT_PASSWORD = '123456';
-
-function sessionSet(token, userId, expiresAt) {
-  const session = { userId, expiresAt };
-  sessions.set(token, session);
-  db.prepare(`
-    INSERT OR REPLACE INTO sessions (token, user_id, expires_at, created_at)
-    VALUES (?, ?, ?, ?)
-  `).run(token, userId, expiresAt, Date.now());
-}
-function sessionDel(token) {
-  sessions.delete(token);
-  db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
-}
-function sessionGet(token) {
-  if (sessions.has(token)) return sessions.get(token);
-  const row = db.prepare('SELECT user_id, expires_at FROM sessions WHERE token = ?').get(token);
-  if (row?.user_id) {
-    const session = { userId: row.user_id, expiresAt: row.expires_at };
-    sessions.set(token, session);
-    return session;
-  }
-  return null;
-}
-function sessionClean() {
-  const now = Date.now();
-  sessions.forEach((value, token) => {
-    if (value.expiresAt < now) sessions.delete(token);
-  });
-  db.prepare('DELETE FROM sessions WHERE expires_at < ? OR user_id IS NULL').run(now);
-}
 let agentBusy = false;
 let diagnosisBusy = false;
 
-const REDFOX_ENDPOINTS = new Set([
-  'hotKeyword/list',
-  'hotSpot/getListByPlatform',
-  'hotSpot/getListByPlatformWithKeyword',
-  'dy/search/likesRank',
-  'dy/search/hotContentRank',
-  'dyData/query',
-  'dyData/queryWork',
-  'dyData/queryUser',
-  'dyData/queryUserWithWorks',
-  'dyData/searchUser',
-  'dyData/searchArticle',
-  'dyUser/query',
-  'xhs/search/search',
-  'xhs/crawl/work',
-  'xhsData/query',
-  'xhsUser/query',
-  'xhsUser/queryAccountDetail',
-  'xhsUser/queryWorkDetail',
-  'xhsUser/searchUser',
-  'xhsUser/searchArticle',
-  'xhsUser/syncUserNotes',
-  'xhsUser/querySimilarAccounts',
-  'cozeSkill/getXhsCozeSkillData',
-  'cozeSkill/getXhsCozeSkillDataOne',
-  'cozeSkill/getXhsCozeSkillDataSeven',
-  'cozeSkill/getXhsCozeSkillDataLowFans',
-  'cozeSkill/getWxDataByCategoryAndTime',
-  'cozeSkill/getGzhCozeSkillDataRaise',
-  'gzh/search/hotArticle',
-  'gzhData/searchUser',
-  'gzhData/searchArticle',
-  'gzhData/queryUser',
-  'gzhData/queryWork',
-  'gzhData/queryWorkList',
-  'gzhData/queryArticleDetail',
-  'gzhUser/query',
-  'cozeSkill/sensitiveWordSearch',
-  'parseWork/queryAiMsgs',
-  'parseWork/queryBiliAiMsgs',
-  'parseWork/queryXhsAiMsgs',
-  'parseWork/queryDyAiMsgs',
-  'parseWork/queryKsAiMsgs/batch',
-  'parseWork/querySphAiMsgs',
-  'parseWork/queryPlayletMsgs',
-  'parseWork/queryBiliPlayletMsgs',
-  'parseWork/queryDyPlayletMsgs',
-  'parseWork/queryGzhPlayletMsgs',
-  'parseWork/queryXhsPlayletMsgs',
-  'parseWork/parse',
-  'parseWork/imageGen/submitSkill',
-  'parseWork/imageGen/result',
-  'parseWork/imageGen/uploadImage',
-  'skill/record/save',
-  'doubaoSearch/submit',
-  'doubaoSearch/result',
-]);
-
-const AI_FEED_PLATFORMS = ['ai-gzh', 'ai-bili', 'ai-xhs', 'ai-dy', 'ai-ks', 'ai-sph', 'playlet-dy', 'playlet-gzh', 'playlet-bili', 'playlet-xhs', 'cultural-tourism-bili', 'cultural-tourism-dy', 'cultural-tourism-gzh', 'cultural-tourism-xhs'];
-
-const CACHE_TTL = {
-  'hotKeyword/list': 10 * 60 * 1000,
-  'hotSpot/getListByPlatform': 30 * 60 * 1000,
-  'hotSpot/getListByPlatformWithKeyword': 30 * 60 * 1000,
-  'dy/search/likesRank': 60 * 60 * 1000,
-  'dy/search/hotContentRank': 60 * 60 * 1000,
-  'dyData/queryUserWithWorks': 60 * 60 * 1000,
-  'xhs/search/search': 30 * 60 * 1000,
-  'xhsUser/searchArticle': 30 * 60 * 1000,
-  'gzh/search/hotArticle': 60 * 60 * 1000,
-  'gzhData/searchArticle': 30 * 60 * 1000,
-  'gzhData/searchUser': 24 * 60 * 60 * 1000,
-  'gzhData/queryWorkList': 60 * 60 * 1000,
-  'parseWork/queryAiMsgs': 60 * 60 * 1000,
-  'parseWork/queryBiliAiMsgs': 60 * 60 * 1000,
-  'parseWork/queryXhsAiMsgs': 60 * 60 * 1000,
-  default: 60 * 60 * 1000,
-};
-
-const DB_PATH = process.env.CACHE_DB_PATH
-  ? path.resolve(process.env.CACHE_DB_PATH)
-  : path.join(DATA_ROOT, 'cache.db');
-try { fs.mkdirSync(DATA_ROOT, { recursive: true }); } catch {}
-const db = new Database(DB_PATH);
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
-db.exec(`
-  CREATE TABLE IF NOT EXISTS api_cache (
-    cache_key TEXT PRIMARY KEY,
-    endpoint TEXT NOT NULL,
-    request_body TEXT NOT NULL,
-    response TEXT NOT NULL,
-    status_code INTEGER,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
-  );
-  CREATE INDEX IF NOT EXISTS idx_endpoint ON api_cache(endpoint);
-  CREATE INDEX IF NOT EXISTS idx_updated ON api_cache(updated_at);
-
-  CREATE TABLE IF NOT EXISTS api_usage (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    endpoint TEXT NOT NULL,
-    status_code INTEGER,
-    cached INTEGER NOT NULL DEFAULT 0,
-    created_at INTEGER NOT NULL
-  );
-  CREATE INDEX IF NOT EXISTS idx_api_usage_created ON api_usage(created_at);
-  CREATE INDEX IF NOT EXISTS idx_api_usage_endpoint ON api_usage(endpoint);
-
-  CREATE TABLE IF NOT EXISTS action_logs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    action TEXT NOT NULL,
-    trigger_source TEXT NOT NULL,
-    data_source TEXT NOT NULL,
-    api_calls INTEGER NOT NULL DEFAULT 0,
-    llm_calls INTEGER NOT NULL DEFAULT 0,
-    detail_json TEXT,
-    created_at INTEGER NOT NULL
-  );
-  CREATE INDEX IF NOT EXISTS idx_action_logs_created ON action_logs(created_at DESC);
-
-  CREATE TABLE IF NOT EXISTS tracked_accounts (
-    id TEXT PRIMARY KEY,
-    plat TEXT NOT NULL,
-    name TEXT NOT NULL,
-    group_name TEXT NOT NULL DEFAULT '其他',
-    raw_info TEXT,
-    synced_at INTEGER,
-    created_at INTEGER NOT NULL
-  );
-
-  CREATE TABLE IF NOT EXISTS account_works (
-    account_id TEXT NOT NULL,
-    plat TEXT NOT NULL,
-    work_id TEXT NOT NULL,
-    work_data TEXT NOT NULL,
-    synced_at INTEGER NOT NULL,
-    PRIMARY KEY (account_id, plat, work_id)
-  );
-
-  CREATE TABLE IF NOT EXISTS account_snapshots (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    account_id TEXT NOT NULL,
-    snapshot_date TEXT NOT NULL,
-    follower_count REAL,
-    redfox_index REAL,
-    work_count REAL,
-    raw_data TEXT,
-    captured_at INTEGER NOT NULL,
-    UNIQUE(account_id, snapshot_date)
-  );
-
-  CREATE TABLE IF NOT EXISTS hot_snapshots (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    snapshot_date TEXT NOT NULL,
-    platform TEXT NOT NULL,
-    rank INTEGER NOT NULL,
-    item_key TEXT NOT NULL,
-    title TEXT NOT NULL,
-    score REAL NOT NULL DEFAULT 0,
-    raw_data TEXT NOT NULL,
-    captured_at INTEGER NOT NULL,
-    UNIQUE(snapshot_date, platform, item_key)
-  );
-  CREATE INDEX IF NOT EXISTS idx_hot_snapshot_date ON hot_snapshots(snapshot_date);
-  CREATE INDEX IF NOT EXISTS idx_hot_item ON hot_snapshots(platform, item_key);
-
-  CREATE TABLE IF NOT EXISTS hot_batches (
-    id TEXT PRIMARY KEY,
-    platform TEXT NOT NULL,
-    data_date TEXT NOT NULL,
-    snapshot_kind TEXT NOT NULL,
-    endpoint TEXT NOT NULL,
-    request_json TEXT NOT NULL,
-    response_json TEXT,
-    status TEXT NOT NULL,
-    item_count INTEGER NOT NULL DEFAULT 0,
-    started_at INTEGER NOT NULL,
-    completed_at INTEGER,
-    error TEXT
-  );
-  CREATE INDEX IF NOT EXISTS idx_hot_batch_lookup
-    ON hot_batches(platform, snapshot_kind, data_date DESC, completed_at DESC);
-  CREATE INDEX IF NOT EXISTS idx_hot_batch_status
-    ON hot_batches(status, completed_at DESC);
-
-  CREATE TABLE IF NOT EXISTS hot_batch_items (
-    batch_id TEXT NOT NULL,
-    rank INTEGER NOT NULL,
-    item_key TEXT NOT NULL,
-    title TEXT NOT NULL,
-    score REAL NOT NULL DEFAULT 0,
-    raw_data TEXT NOT NULL,
-    PRIMARY KEY(batch_id, item_key),
-    FOREIGN KEY(batch_id) REFERENCES hot_batches(id) ON DELETE CASCADE
-  );
-  CREATE INDEX IF NOT EXISTS idx_hot_batch_items_rank
-    ON hot_batch_items(batch_id, rank);
-
-  CREATE TABLE IF NOT EXISTS hot_daily_keywords (
-    data_date TEXT PRIMARY KEY,
-    source_fingerprint TEXT NOT NULL,
-    result_json TEXT NOT NULL,
-    generated_at INTEGER NOT NULL
-  );
-
-  CREATE TABLE IF NOT EXISTS inspirations (
-    id TEXT PRIMARY KEY,
-    title TEXT NOT NULL,
-    summary TEXT NOT NULL,
-    angle TEXT,
-    target_platform TEXT,
-    source_keywords TEXT NOT NULL,
-    source_items TEXT,
-    status TEXT NOT NULL DEFAULT '待研究',
-    created_at INTEGER NOT NULL
-  );
-  CREATE INDEX IF NOT EXISTS idx_inspiration_created ON inspirations(created_at DESC);
-
-  CREATE TABLE IF NOT EXISTS inspiration_keyword_configs (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    domain TEXT,
-    target_platforms TEXT NOT NULL DEFAULT '[]',
-    cron_expr TEXT NOT NULL DEFAULT '0 9 * * *',
-    enabled INTEGER NOT NULL DEFAULT 1,
-    sources TEXT NOT NULL DEFAULT '[]',
-    source_weights TEXT NOT NULL DEFAULT '{}',
-    idea_count INTEGER NOT NULL DEFAULT 6,
-    evidence_limit INTEGER NOT NULL DEFAULT 20,
-    daily_api_budget INTEGER NOT NULL DEFAULT 3,
-    search_mode TEXT NOT NULL DEFAULT 'combined',
-    last_run_at INTEGER,
-    last_success_at INTEGER,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
-  );
-
-  CREATE TABLE IF NOT EXISTS inspiration_keyword_terms (
-    id TEXT PRIMARY KEY,
-    config_id TEXT NOT NULL,
-    term TEXT NOT NULL,
-    term_type TEXT NOT NULL,
-    manual_weight REAL NOT NULL DEFAULT 0,
-    learned_weight REAL NOT NULL DEFAULT 0,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL,
-    UNIQUE(config_id, term),
-    FOREIGN KEY(config_id) REFERENCES inspiration_keyword_configs(id) ON DELETE CASCADE
-  );
-  CREATE INDEX IF NOT EXISTS idx_inspiration_terms_config
-    ON inspiration_keyword_terms(config_id, term_type);
-
-  CREATE TABLE IF NOT EXISTS inspiration_runs (
-    id TEXT PRIMARY KEY,
-    config_id TEXT,
-    trigger_type TEXT NOT NULL,
-    evidence_fingerprint TEXT,
-    status TEXT NOT NULL,
-    idea_count INTEGER NOT NULL DEFAULT 0,
-    api_calls INTEGER NOT NULL DEFAULT 0,
-    started_at INTEGER NOT NULL,
-    completed_at INTEGER,
-    error TEXT,
-    FOREIGN KEY(config_id) REFERENCES inspiration_keyword_configs(id) ON DELETE SET NULL
-  );
-  CREATE INDEX IF NOT EXISTS idx_inspiration_runs_config
-    ON inspiration_runs(config_id, started_at DESC);
-
-  CREATE TABLE IF NOT EXISTS inspiration_feedback (
-    id TEXT PRIMARY KEY,
-    inspiration_id TEXT NOT NULL,
-    feedback_type TEXT NOT NULL,
-    affected_terms TEXT NOT NULL DEFAULT '[]',
-    weight_delta REAL NOT NULL DEFAULT 0,
-    created_at INTEGER NOT NULL,
-    revoked_at INTEGER,
-    FOREIGN KEY(inspiration_id) REFERENCES inspirations(id) ON DELETE CASCADE
-  );
-
-  CREATE TABLE IF NOT EXISTS kb_config (
-    source_type TEXT PRIMARY KEY,
-    provider TEXT,
-    source_path TEXT,
-    notion_api_key TEXT,
-    notion_database_id TEXT,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER
-  );
-
-  CREATE TABLE IF NOT EXISTS crontab (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    cron_expr TEXT NOT NULL,
-    enabled INTEGER NOT NULL DEFAULT 1,
-    task_type TEXT NOT NULL,
-    task_config TEXT,
-    last_run INTEGER,
-    sort_order INTEGER NOT NULL DEFAULT 0,
-    created_at INTEGER NOT NULL
-  );
-
-  CREATE TABLE IF NOT EXISTS kb_entries_cache (
-    cache_key TEXT PRIMARY KEY,
-    source_type TEXT NOT NULL,
-    entry_key TEXT NOT NULL,
-    title TEXT,
-    tags TEXT,
-    folder TEXT,
-    content_preview TEXT,
-    content TEXT,
-    frontmatter TEXT,
-    created_at INTEGER,
-    updated_at INTEGER,
-    scanned_at INTEGER NOT NULL
-  );
-  CREATE INDEX IF NOT EXISTS idx_kb_cache_source ON kb_entries_cache(source_type);
-  CREATE INDEX IF NOT EXISTS idx_kb_cache_updated ON kb_entries_cache(scanned_at);
-
-  CREATE TABLE IF NOT EXISTS wersss_config (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
-    base_url TEXT NOT NULL,
-    username TEXT NOT NULL,
-    password_enc TEXT NOT NULL,
-    token TEXT,
-    token_expires_at INTEGER,
-    enabled INTEGER NOT NULL DEFAULT 1,
-    updated_at INTEGER NOT NULL
-  );
-
-  CREATE TABLE IF NOT EXISTS wersss_subscriptions (
-    mp_id TEXT PRIMARY KEY,
-    mp_name TEXT NOT NULL,
-    mp_alias TEXT,
-    avatar TEXT,
-    last_synced_at INTEGER,
-    enabled INTEGER NOT NULL DEFAULT 1,
-    added_at INTEGER NOT NULL,
-    updated_at INTEGER
-  );
-
-  CREATE TABLE IF NOT EXISTS wersss_articles (
-    id TEXT PRIMARY KEY,
-    mp_id TEXT NOT NULL,
-    title TEXT NOT NULL,
-    summary TEXT,
-    content TEXT,
-    url TEXT,
-    cover TEXT,
-    publish_time INTEGER,
-    synced_at INTEGER NOT NULL,
-    FOREIGN KEY (mp_id) REFERENCES wersss_subscriptions(mp_id) ON DELETE CASCADE
-  );
-  CREATE INDEX IF NOT EXISTS idx_wersss_articles_mp ON wersss_articles(mp_id, publish_time DESC);
-  CREATE INDEX IF NOT EXISTS idx_wersss_articles_recent ON wersss_articles(publish_time DESC);
-
-  CREATE TABLE IF NOT EXISTS local_data (
-    module TEXT NOT NULL,
-    data_key TEXT NOT NULL,
-    data_json TEXT NOT NULL,
-    cached_at INTEGER NOT NULL,
-    expires_at INTEGER,
-    PRIMARY KEY(module, data_key)
-  );
-  CREATE INDEX IF NOT EXISTS idx_local_data_module ON local_data(module);
-
-  CREATE TABLE IF NOT EXISTS my_accounts (
-    id TEXT PRIMARY KEY,
-    tracker_id TEXT,
-    name TEXT NOT NULL,
-    plat TEXT NOT NULL,
-    avatar TEXT,
-    tracks TEXT,
-    style_profile TEXT,
-    style_source TEXT,
-    style_source_ref TEXT,
-    style_updated_at INTEGER,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
-  );
-
-  CREATE TABLE IF NOT EXISTS style_templates (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    platform TEXT,
-    template TEXT NOT NULL,
-    is_default INTEGER DEFAULT 0,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
-  );
-
-  CREATE TABLE IF NOT EXISTS skill_classifications (
-    slug TEXT PRIMARY KEY,
-    llm_category TEXT NOT NULL,
-    original_category TEXT,
-    analyzed_at INTEGER NOT NULL,
-    skill_signature TEXT
-  );
-
-  CREATE TABLE IF NOT EXISTS users (
-    id TEXT PRIMARY KEY,
-    username TEXT NOT NULL COLLATE NOCASE UNIQUE,
-    display_name TEXT NOT NULL,
-    password_hash TEXT NOT NULL,
-    role TEXT NOT NULL DEFAULT 'owner',
-    must_change_password INTEGER NOT NULL DEFAULT 1,
-    last_login_at INTEGER,
-    password_changed_at INTEGER,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
-  );
-
-  CREATE TABLE IF NOT EXISTS sessions (
-    token TEXT PRIMARY KEY,
-    user_id TEXT,
-    expires_at INTEGER NOT NULL,
-    created_at INTEGER NOT NULL,
-    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
-  );
-`);
-
-function ensureColumn(table, column, definition) {
-  const columns = db.prepare(`PRAGMA table_info(${table})`).all();
-  if (!columns.some(item => item.name === column)) {
-    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
-  }
-}
-
-ensureColumn('tracked_accounts', 'group_name', "TEXT NOT NULL DEFAULT '其他'");
-ensureColumn('inspirations', 'source_items', 'TEXT');
-ensureColumn('inspirations', 'kb_link', 'TEXT');
-ensureColumn('inspirations', 'config_id', 'TEXT');
-ensureColumn('inspirations', 'run_id', 'TEXT');
-ensureColumn('inspirations', 'generation_type', "TEXT DEFAULT 'manual'");
-ensureColumn('inspirations', 'is_favorite', 'INTEGER NOT NULL DEFAULT 0');
-ensureColumn('inspirations', 'feedback_state', 'TEXT');
-ensureColumn('inspirations', 'deleted_at', 'INTEGER');
-ensureColumn('inspirations', 'source_mode', "TEXT NOT NULL DEFAULT 'legacy'");
-ensureColumn('inspirations', 'generation_note', 'TEXT');
-ensureColumn('inspirations', 'generated_by', 'TEXT');
-ensureColumn('kb_config', 'provider', 'TEXT');
-ensureColumn('account_works', 'publish_at', 'INTEGER');
-ensureColumn('account_works', 'content_key', 'TEXT');
-ensureColumn('account_snapshots', 'score', 'REAL');
-ensureColumn('account_snapshots', 'analysis', 'TEXT');
-ensureColumn('inspiration_keyword_configs', 'search_mode', "TEXT NOT NULL DEFAULT 'combined'");
-ensureColumn('wersss_subscriptions', 'updated_at', 'INTEGER');
-ensureColumn('sessions', 'user_id', 'TEXT');
-db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)');
+// DB schema + ensureColumn 已移到 lib/db.js；DATA_ROOT / db 通过 require 获取
 sessionClean();
 db.transaction(() => {
   const update = db.prepare('UPDATE tracked_accounts SET raw_info = ? WHERE id = ?');
@@ -553,12 +86,6 @@ db.transaction(() => {
     update.run(JSON.stringify(raw), row.id);
   }
 })();
-db.exec(`
-  CREATE INDEX IF NOT EXISTS idx_account_works_publish
-  ON account_works(account_id, publish_at DESC, synced_at DESC);
-  CREATE INDEX IF NOT EXISTS idx_account_works_content
-  ON account_works(account_id, content_key);
-`);
 db.transaction(() => {
   const rows = db.prepare(`
     SELECT account_id, plat, work_id, work_data, synced_at
@@ -587,9 +114,6 @@ db.transaction(() => {
     update.run(workPublishAt(work), contentKey, row.account_id, row.plat, row.work_id);
   }
 })();
-ensureColumn('crontab', 'notify_on_failure', 'INTEGER NOT NULL DEFAULT 1');
-ensureColumn('crontab', 'notify_on_success', 'INTEGER NOT NULL DEFAULT 0');
-ensureColumn('crontab', 'sort_order', 'INTEGER NOT NULL DEFAULT 0');
 
 function migrateLegacyHotSnapshots() {
   if (getLocalData('hot', 'batch-migration-v1')) return;
@@ -719,14 +243,6 @@ function json(res, status, payload, extraHeaders = {}) {
     ...extraHeaders,
   });
   res.end(JSON.stringify(payload));
-}
-
-function getCookies(req) {
-  return String(req.headers.cookie || '').split(';').reduce((cookies, part) => {
-    const index = part.indexOf('=');
-    if (index > 0) cookies[part.slice(0, index).trim()] = decodeURIComponent(part.slice(index + 1).trim());
-    return cookies;
-  }, {});
 }
 
 function initializeDefaultUser() {
@@ -1254,72 +770,6 @@ function createInspirationConfigFromSuggestion(account, suggestion) {
   return saveInspirationConfig(config);
 }
 
-function publicUser(row) {
-  if (!row) return null;
-  return {
-    id: row.id,
-    username: row.username,
-    displayName: row.display_name,
-    role: row.role,
-    mustChangePassword: Boolean(row.must_change_password),
-    lastLoginAt: row.last_login_at,
-    passwordChangedAt: row.password_changed_at,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
-}
-
-function currentSession(req) {
-  const token = getCookies(req).furnace_session;
-  const session = token ? sessionGet(token) : null;
-  if (!session || session.expiresAt < Date.now()) {
-    if (token) sessionDel(token);
-    return null;
-  }
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(session.userId);
-  if (!user) {
-    sessionDel(token);
-    return null;
-  }
-  return { token, session, user };
-}
-
-function isAuthorized(req) {
-  return Boolean(currentSession(req));
-}
-
-const KB_ENC_ALGO = 'aes-256-gcm';
-const KB_ENC_KEY_SRC = process.env.KB_ENCRYPTION_KEY;
-const KB_ENC_INSECURE = !KB_ENC_KEY_SRC;
-if (KB_ENC_INSECURE) {
-  console.error('[security] KB_ENCRYPTION_KEY 未配置。知识库凭证使用默认弱密钥加密，cache.db 泄漏即等于凭证泄漏。请在 .env 设置 KB_ENCRYPTION_KEY（生成命令：openssl rand -hex 32；已有数据库设置后请勿修改）');
-}
-const KB_ENC_KEY = crypto.createHash('sha256').update(String(KB_ENC_KEY_SRC || 'furnace-kb-key')).digest();
-
-function encryptKb(text) {
-  if (!text) return '';
-  const iv = crypto.randomBytes(16);
-  const cipher = crypto.createCipheriv(KB_ENC_ALGO, KB_ENC_KEY, iv);
-  let enc = cipher.update(text, 'utf8', 'hex');
-  enc += cipher.final('hex');
-  const authTag = cipher.getAuthTag();
-  return iv.toString('hex') + ':' + authTag.toString('hex') + ':' + enc;
-}
-
-function decryptKb(text) {
-  if (!text) return '';
-  const parts = text.split(':');
-  if (parts.length !== 3) return '';
-  const iv = Buffer.from(parts[0], 'hex');
-  const authTag = Buffer.from(parts[1], 'hex');
-  const enc = parts[2];
-  const decipher = crypto.createDecipheriv(KB_ENC_ALGO, KB_ENC_KEY, iv);
-  decipher.setAuthTag(authTag);
-  let dec = decipher.update(enc, 'hex', 'utf8');
-  dec += decipher.final('utf8');
-  return dec;
-}
-
 const KB_CACHE_TTL = {
   obsidian: 5 * 60 * 1000,   // 5 分钟
   notion: 60 * 1000,          // 1 分钟（Notion API 限制更严）
@@ -1402,44 +852,6 @@ function readBody(req) {
   });
 }
 
-function getCacheKey(endpoint, query, body) {
-  return `${endpoint}?${query}&${JSON.stringify(stableObject(body))}`;
-}
-
-function getCached(cacheKey, endpoint) {
-  const row = db.prepare('SELECT response, status_code, updated_at FROM api_cache WHERE cache_key = ?').get(cacheKey);
-  if (!row) return null;
-  const ttl = CACHE_TTL[endpoint] || CACHE_TTL.default;
-  if (Date.now() - row.updated_at > ttl) return null;
-  return row;
-}
-
-function isCacheableRedfoxResponse(status, response) {
-  if (status < 200 || status >= 300) return false;
-  const payload = parseJson(response);
-  if (payload && Object.hasOwn(payload, 'code') && ![200, 2000].includes(payload.code)) return false;
-  return true;
-}
-
-function setCache(cacheKey, endpoint, body, status, response) {
-  if (!isCacheableRedfoxResponse(status, response)) return;
-  const now = Date.now();
-  db.prepare(`
-    INSERT INTO api_cache (cache_key, endpoint, request_body, response, status_code, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(cache_key) DO UPDATE SET
-      response = excluded.response,
-      status_code = excluded.status_code,
-      updated_at = excluded.updated_at
-  `).run(cacheKey, endpoint, JSON.stringify(body), response, status, now, now);
-}
-
-function logApiUsage(endpoint, status, cached = false) {
-  db.prepare(`
-    INSERT INTO api_usage (endpoint, status_code, cached, created_at)
-    VALUES (?, ?, ?, ?)
-  `).run(endpoint, status, cached ? 1 : 0, Date.now());
-}
 
 function logAction(action, triggerSource, dataSource, detail = {}, apiCalls = 0, llmCalls = 0) {
   db.prepare(`
@@ -1462,58 +874,6 @@ function listActionLogs(limit = 100) {
     detail: parseJson(row.detail_json) || {},
     createdAt: row.created_at,
   }));
-}
-
-function redfoxRequest(endpoint, body = {}, query = '', method = 'POST') {
-  if (!API_KEY) return Promise.reject(new Error('未配置 REDFOX_API_KEY'));
-  if (!REDFOX_ENDPOINTS.has(endpoint)) return Promise.reject(new Error('不允许访问该 RedFox 端点'));
-  const requestBody = method === 'GET' ? '' : JSON.stringify(body);
-  return new Promise((resolve, reject) => {
-    const req = https.request({
-      hostname: REDFOX_HOST,
-      port: 443,
-      path: `${REDFOX_PATH_PREFIX}${endpoint}${query}`,
-      method,
-      headers: {
-        'X-API-KEY': API_KEY,
-        'REDFOX_API_KEY': API_KEY,
-        ...(requestBody ? {
-          'Content-Type': 'application/json',
-          'Content-Length': Buffer.byteLength(requestBody),
-        } : {}),
-      },
-      timeout: 30000,
-    }, response => {
-      let data = '';
-      response.on('data', chunk => { data += chunk; });
-      response.on('end', () => resolve({ status: response.statusCode || 502, body: data }));
-    });
-    req.on('timeout', () => req.destroy(new Error('RedFox 请求超时')));
-    req.on('error', reject);
-    if (requestBody) req.write(requestBody);
-    req.end();
-  });
-}
-
-async function redfoxData(endpoint, body = {}) {
-  const response = await redfoxRequest(endpoint, body);
-  logApiUsage(endpoint, response.status, false);
-  const payload = parseJson(response.body);
-  if (response.status < 200 || response.status >= 300 || !payload || ![200, 2000].includes(payload.code)) {
-    throw new Error(payload?.msg || payload?.message || `RedFox HTTP ${response.status}`);
-  }
-  return payload.data;
-}
-
-async function redfoxGetData(endpoint, queryParams = {}) {
-  const query = `?${new URLSearchParams(queryParams).toString()}`;
-  const response = await redfoxRequest(endpoint, {}, query, 'GET');
-  logApiUsage(endpoint, response.status, false);
-  const payload = parseJson(response.body);
-  if (response.status < 200 || response.status >= 300 || !payload || ![200, 2000].includes(payload.code)) {
-    throw new Error(payload?.msg || payload?.message || `RedFox HTTP ${response.status}`);
-  }
-  return payload.data;
 }
 
 // 豆包 WebSearch：提交搜索任务后轮询等待结果，最多等 60s
@@ -2592,54 +1952,6 @@ function usageSummary() {
   };
 }
 
-function normalizeSnapshotItems(platform, data) {
-  if (platform === 'all') {
-    return (Array.isArray(data) ? data : []).map(item => ({
-      key: item.keyword,
-      title: item.keyword,
-      score: Array.isArray(item.plats) ? item.plats.length : 0,
-      raw: item,
-    }));
-  }
-  if (AI_FEED_PLATFORMS.includes(platform)) {
-    const list = Array.isArray(data) ? data : data?.list || [];
-    return list.map(item => ({
-      key: String(item.photoId || item.id || item.title),
-      title: item.title || '(无标题)',
-      score: platform === 'ai-gzh' || platform === 'playlet-gzh'
-        ? toNumber(item.readCount) || 0
-        : (toNumber(item.likeCount) || 0)
-          + (toNumber(item.shareCount) || 0)
-          + (toNumber(item.commentCount) || 0),
-      raw: item,
-    }));
-  }
-  const list = Array.isArray(data) ? data : data?.list || data?.articles || [];
-  return list.map(item => {
-    if (platform === 'dy') {
-      return {
-        key: String(item.workId || item.id || item.title),
-        title: item.title || item.content || '(无标题)',
-        score: toNumber(item.likeCount) || 0,
-        raw: item,
-      };
-    }
-    if (platform === 'xhs') {
-      return {
-        key: String(item.workId || item.id || item.workTitle || item.title),
-        title: item.workTitle || item.title || item.workDesc || item.desc || '(无标题)',
-        score: toNumber(item.workLikedCount ?? item.likedCount ?? item.interactiveCount) || 0,
-        raw: item,
-      };
-    }
-    return {
-      key: String(item.workUuid || item.id || item.title),
-      title: item.title || item.summary || '(无标题)',
-      score: toNumber(item.readCount ?? item.clicksCount) || 0,
-      raw: item,
-    };
-  });
-}
 
 function hotBatchId(platform, dataDate, startedAt) {
   return `${platform}-${dataDate}-${startedAt}-${crypto.randomBytes(4).toString('hex')}`;
@@ -3836,84 +3148,6 @@ const WEB_SEARCH_TOOL = [{
     },
   },
 }];
-
-const HOTSPOT_LISTS = {
-  bdList: ['bd', '百度'],
-  bzList: ['bz', 'B站'],
-  dyList: ['dy', '抖音'],
-  ksList: ['ks', '快手'],
-  ttList: ['tt', '头条'],
-  wbList: ['wb', '微博'],
-  zhList: ['zh', '知乎'],
-};
-
-function normalizeHotspots(data) {
-  const items = [];
-  for (const [key, [platform, platformName]] of Object.entries(HOTSPOT_LISTS)) {
-    for (const item of data?.[key] || []) {
-      const title = String(item.title || '').trim();
-      if (!title) continue;
-      items.push({
-        id: crypto.createHash('sha1').update(`${platform}:${title}`).digest('hex').slice(0, 16),
-        title,
-        platform,
-        platformName,
-        hotCount: String(item.hotCount || '0'),
-        rank: Number(item.index) || 0,
-        createdAt: item.gmtCreate || '',
-        url: item.url || '',
-      });
-    }
-  }
-  const hotNumber = value => Number(String(value || '').replace(/[^\d.]/g, '')) || 0;
-  return items.sort((a, b) => hotNumber(b.hotCount) - hotNumber(a.hotCount) || a.rank - b.rank);
-}
-
-function normalizeRealtimeHotspots(data, snapshotDate = localDate()) {
-  const groups = new Map();
-  for (const item of normalizeHotspots(data)) {
-    if (item.createdAt && !String(item.createdAt).startsWith(snapshotDate)) continue;
-    const canonical = item.title.toLowerCase().replace(/[\s·,，。！？!?：:、"'“”‘’（）()【】[\]-]/g, '');
-    const key = canonical || `${item.platform}:${item.title}`;
-    if (!groups.has(key)) {
-      groups.set(key, {
-        key,
-        title: item.title,
-        score: 0,
-        bestRank: item.rank || 50,
-        platforms: new Set(),
-        sources: [],
-        latestAt: '',
-      });
-    }
-    const group = groups.get(key);
-    group.platforms.add(item.platformName);
-    group.score += Math.max(1, 51 - (item.rank || 50));
-    group.bestRank = Math.min(group.bestRank, item.rank || 50);
-    if (item.createdAt > group.latestAt) group.latestAt = item.createdAt;
-    group.sources.push(item);
-  }
-  return Array.from(groups.values())
-    .sort((a, b) =>
-      b.platforms.size - a.platforms.size
-      || b.score - a.score
-      || a.bestRank - b.bestRank
-      || b.latestAt.localeCompare(a.latestAt)
-    )
-    .slice(0, 20)
-    .map(group => ({
-      key: group.key,
-      title: group.title,
-      score: group.score,
-      raw: {
-        realtime: true,
-        plats: Array.from(group.platforms),
-        bestRank: group.bestRank,
-        latestAt: group.latestAt,
-        sources: group.sources,
-      },
-    }));
-}
 
 function localDateTime(date = new Date()) {
   return `${localDate(date)} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}:${String(date.getSeconds()).padStart(2, '0')}`;
