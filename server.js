@@ -43,6 +43,36 @@ const {
   normalizeRealtimeHotspots,
 } = require('./lib/normalize');
 const { MAX_BODY_SIZE, json, readBody } = require('./lib/http');
+const {
+  getWersssConfigRow, getWersssConfig, getValidWersssToken,
+  getWersssAuthStatus, syncWersssArticles, prefetchWersssContent,
+} = require('./lib/wersss');
+const notifLib = require('./lib/notifications');
+const { NOTIFICATION_CHANNELS, sendNotification } = notifLib;
+const { notificationConfigs, publicNotificationConfigs, saveNotificationConfigs } = notifLib.makeHelpers(
+  () => getLocalData('settings', 'notifications') || {},
+  (module, key, data, expiresAt) => setLocalData(module, key, data, expiresAt),
+);
+const { clamp, logAction, listActionLogs, usageSummary, getOfficialQuota: getOfficialQuotaRaw } = require('./lib/observability');
+const getOfficialQuota = () => getOfficialQuotaRaw(REDFOX_HOST, REDFOX_WEB_COOKIE);
+const llmLib = require('./lib/llm');
+const { parseLlmJson, WEB_SEARCH_TOOL } = llmLib;
+// doDoubaoWebSearch / formatDoubaoSearchResults 是 hoisted function declarations，
+// 闭包在运行时解析；可在此处构造 TOOL_FUNCTIONS
+const TOOL_FUNCTIONS = {
+  web_search: async (args) => {
+    const query = args?.query || args?.q || args?.search_query || '';
+    if (!query) return JSON.stringify({ error: 'web_search 需要提供 query 参数' });
+    try {
+      const data = await doDoubaoWebSearch(query);
+      logAction('web_search', 'function-call', 'redfox-api', { query }, 1, 0);
+      return formatDoubaoSearchResults(data);
+    } catch (e) {
+      return JSON.stringify({ error: `web_search 失败: ${e.message}` });
+    }
+  },
+};
+const { callLlm, callLlmJson } = llmLib.make(TOOL_FUNCTIONS);
 
 const APP_VERSION = (() => {
   try { return require('./package.json').version || '0.0.0'; } catch { return '0.0.0'; }
@@ -256,228 +286,6 @@ function redfoxApplyUrl() {
 }
 
 // ============ WeRss 接入源（we-mp-rss） ============
-function getWersssConfigRow() {
-  return db.prepare('SELECT * FROM wersss_config WHERE id = 1').get();
-}
-
-function getWersssConfig() {
-  const row = getWersssConfigRow();
-  if (!row) return null;
-  return {
-    baseUrl: row.base_url,
-    username: row.username,
-    password: decryptKb(row.password_enc),
-    token: row.token,
-    tokenExpiresAt: row.token_expires_at,
-    enabled: Boolean(row.enabled),
-  };
-}
-
-async function getValidWersssToken() {
-  const config = getWersssConfig();
-  if (!config || !config.enabled) throw new Error('WeRss 接入未配置');
-  const now = Date.now();
-  if (config.token && config.tokenExpiresAt && config.tokenExpiresAt - now > 60 * 1000) {
-    return { token: config.token, config };
-  }
-  const result = await wersss.login(config.baseUrl, config.username, config.password);
-  if (!result?.access_token) throw new Error('WeRss 登录未返回 token');
-  const expiresIn = result.expires_in ? Number(result.expires_in) * 1000 : 24 * 60 * 60 * 1000;
-  const expiresAt = now + expiresIn;
-  db.prepare(`UPDATE wersss_config SET token = ?, token_expires_at = ?, updated_at = ? WHERE id = 1`)
-    .run(result.access_token, expiresAt, now);
-  return { token: result.access_token, config: { ...config, token: result.access_token, tokenExpiresAt: expiresAt } };
-}
-
-async function getWersssAuthStatus() {
-  const cfgRow = getWersssConfigRow();
-  if (!cfgRow) return { configured: false, enabled: false, message: 'WeRss 未配置' };
-  if (!cfgRow.enabled) return { configured: true, enabled: false, message: 'WeRss 接入已禁用' };
-  let token;
-  let tokenRefreshed = false;
-  let tokenExpiresAt = cfgRow.token_expires_at || 0;
-  try {
-    const valid = await getValidWersssToken();
-    token = valid.token;
-    tokenRefreshed = !cfgRow.token || cfgRow.token !== token;
-    tokenExpiresAt = valid.config.tokenExpiresAt || tokenExpiresAt;
-  } catch (e) {
-    return { configured: true, enabled: true, tokenValid: false, message: `登录失败：${e.message}` };
-  }
-  const config = getWersssConfig();
-  const now = Date.now();
-  const tokenExpired = tokenExpiresAt > 0 && tokenExpiresAt - now <= 0;
-  try {
-    const status = await wersss.qrStatus(config.baseUrl, token);
-    const loginStatus = Boolean(status?.login_status);
-    const hasCode = Boolean(status?.qr_code);
-    // 注意：这里不主动拉 qrImage/qrCode，更不触发 QR 生成。
-    // QR 触发 / 拉取交给前端的 POST /api/_/wersss/qr/start 单次调用。
-    return {
-      configured: true,
-      enabled: true,
-      tokenValid: !tokenExpired,
-      tokenExpired,
-      tokenExpiresAt,
-      tokenRefreshed,
-      wxAuthorized: loginStatus,
-      hasQrCode: hasCode,
-      message: tokenExpired
-        ? 'Token 已过期，请点击「授权扫码」刷新'
-        : loginStatus ? '微信已授权' : '微信授权已过期，请扫码重新授权',
-    };
-  } catch (e) {
-    return {
-      configured: true,
-      enabled: true,
-      tokenValid: true,
-      tokenExpired: false,
-      tokenExpiresAt,
-      wxAuthorized: false,
-      message: `授权状态检测失败：${e.message}`,
-    };
-  }
-}
-
-async function syncWersssArticles() {
-  const cfgRow = getWersssConfigRow();
-  if (!cfgRow) throw new Error('WeRss 未配置');
-  if (!cfgRow.enabled) throw new Error('WeRss 接入已禁用');
-  const { token, config } = await getValidWersssToken();
-  const tokenRefreshed = !cfgRow.token || cfgRow.token !== token;
-  const subs = db.prepare('SELECT * FROM wersss_subscriptions WHERE enabled = 1').all();
-  if (!subs.length) return { ok: true, tokenStatus: 'valid', tokenRefreshed, synced: 0, articles: 0, perMp: [] };
-  const now = Date.now();
-  // 刷新订阅公众号元信息（名称、头像等可能变化），分页拉完所有订阅
-  try {
-    const updateSubMeta = db.prepare(`
-      UPDATE wersss_subscriptions
-      SET mp_name = COALESCE(NULLIF(?, ''), mp_name),
-          mp_alias = COALESCE(NULLIF(?, ''), mp_alias),
-          avatar = COALESCE(NULLIF(?, ''), avatar),
-          updated_at = ?
-      WHERE mp_id = ?
-    `);
-    let subOffset = 0;
-    const subPageSize = 100;
-    while (true) {
-      const freshSubs = await wersss.listSubscriptions(config.baseUrl, token, { limit: subPageSize, offset: subOffset });
-      if (!freshSubs.length) break;
-      for (const mp of freshSubs) {
-        updateSubMeta.run(mp.mpName, mp.mpAlias, mp.avatar, now, mp.mpId);
-      }
-      if (freshSubs.length < subPageSize) break;
-      subOffset += subPageSize;
-    }
-  } catch (e) {
-    console.warn('[wersss] 刷新订阅元信息失败:', e.message);
-  }
-  const upsertArticle = db.prepare(`
-    INSERT INTO wersss_articles (id, mp_id, title, summary, content, url, cover, publish_time, synced_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(id) DO UPDATE SET
-      title = COALESCE(NULLIF(?, ''), wersss_articles.title),
-      summary = COALESCE(NULLIF(?, ''), wersss_articles.summary),
-      url = COALESCE(NULLIF(?, ''), wersss_articles.url),
-      cover = COALESCE(NULLIF(?, ''), wersss_articles.cover),
-      publish_time = COALESCE(?, wersss_articles.publish_time),
-      synced_at = ?
-  `);
-  const updateSub = db.prepare('UPDATE wersss_subscriptions SET last_synced_at = ? WHERE mp_id = ?');
-  let totalArticles = 0;
-  const perMp = [];
-  for (const sub of subs) {
-    try {
-      // 先触发 we-mp-rss 去微信抓取最新文章（异步线程，等 2 秒让抓取排队完成）
-      try {
-        await wersss.updateMp(config.baseUrl, token, sub.mp_id);
-        await new Promise(r => setTimeout(r, 2000));
-      } catch (e) {
-        console.warn(`[wersss] updateMp ${sub.mp_name} 失败:`, e.message);
-      }
-      let offset = 0;
-      let count = 0;
-      let batch;
-      do {
-        batch = await wersss.listArticles(config.baseUrl, token, { mpId: sub.mp_id, limit: 100, offset, hasContent: false });
-        if (!batch.length) break;
-        const tx = db.transaction((items) => {
-          for (const a of items) {
-            if (!a.id) continue;
-            upsertArticle.run(
-            a.id, sub.mp_id, a.title || '', a.summary || '', a.content || '', a.url || '', a.cover || '', a.publishTime || null, now,
-            a.title || '', a.summary || '', a.url || '', a.cover || '', a.publishTime || null, now,
-          );
-            count++;
-          }
-        });
-        tx(batch);
-        offset += batch.length;
-      } while (batch.length === 100 && offset < 1000);
-      updateSub.run(now, sub.mp_id);
-      totalArticles += count;
-      perMp.push({ mpId: sub.mp_id, mpName: sub.mp_name, count, ok: true });
-      console.log(`[wersss] 同步公众号 ${sub.mp_name}(${sub.mp_id}) 完成，新增/更新 ${count} 条`);
-    } catch (e) {
-      console.warn(`[wersss] 同步公众号 ${sub.mp_name}(${sub.mp_id}) 失败:`, e.message);
-      perMp.push({ mpId: sub.mp_id, mpName: sub.mp_name, count: 0, ok: false, error: e.message });
-    }
-  }
-  const failed = perMp.filter(m => !m.ok);
-  return {
-    ok: failed.length === 0,
-    tokenStatus: 'valid',
-    tokenRefreshed,
-    synced: subs.length,
-    articles: totalArticles,
-    failed: failed.length,
-    perMp,
-  };
-}
-
-async function runWersssSyncCron() {
-  const syncResult = await syncWersssArticles();
-  let prefetchResult = null;
-  if (syncResult.ok && syncResult.articles > 0) {
-    try {
-      prefetchResult = await prefetchWersssContent();
-    } catch (e) {
-      console.warn('[wersss] 预抓取正文失败:', e.message);
-      prefetchResult = { error: e.message };
-    }
-  }
-  return { ...syncResult, prefetch: prefetchResult };
-}
-
-// 批量预抓取正文（4 并发，避免压垮 we-mp-rss）
-async function prefetchWersssContent() {
-  const { token, config } = await getValidWersssToken();
-  const pending = db.prepare(`SELECT id FROM wersss_articles WHERE content IS NULL OR length(content) < 100`).all();
-  if (!pending.length) return { total: 0, done: 0, failed: 0 };
-  const CONCURRENCY = 4;
-  const update = db.prepare('UPDATE wersss_articles SET content = ? WHERE id = ?');
-  let done = 0;
-  let failed = 0;
-  for (let i = 0; i < pending.length; i += CONCURRENCY) {
-    const batch = pending.slice(i, i + CONCURRENCY);
-    const results = await Promise.allSettled(
-      batch.map(a => wersss.getArticle(config.baseUrl, token, a.id))
-    );
-    const tx = db.transaction(() => {
-      results.forEach((r, idx) => {
-        if (r.status === 'fulfilled' && r.value?.content && r.value.content.length >= 100) {
-          update.run(r.value.content, batch[idx].id);
-          done++;
-        } else {
-          failed++;
-        }
-      });
-    });
-    tx();
-  }
-  return { total: pending.length, done, failed };
-}
-
 // ============ 我的账号 + 风格档案 ============
 function listMyAccounts() {
   return db.prepare('SELECT * FROM my_accounts ORDER BY created_at DESC').all().map(rowToMyAccount);
@@ -827,28 +635,6 @@ function invalidateKbEntryCache(sourceType, entryKey) {
 
 
 
-function logAction(action, triggerSource, dataSource, detail = {}, apiCalls = 0, llmCalls = 0) {
-  db.prepare(`
-    INSERT INTO action_logs
-      (action, trigger_source, data_source, api_calls, llm_calls, detail_json, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(action, triggerSource, dataSource, apiCalls, llmCalls, JSON.stringify(detail || {}), Date.now());
-}
-
-function listActionLogs(limit = 100) {
-  return db.prepare(`
-    SELECT * FROM action_logs ORDER BY created_at DESC LIMIT ?
-  `).all(clamp(limit, 1, 200)).map(row => ({
-    id: row.id,
-    action: row.action,
-    triggerSource: row.trigger_source,
-    dataSource: row.data_source,
-    apiCalls: row.api_calls,
-    llmCalls: row.llm_calls,
-    detail: parseJson(row.detail_json) || {},
-    createdAt: row.created_at,
-  }));
-}
 
 // 豆包 WebSearch：提交搜索任务后轮询等待结果，最多等 60s
 async function doDoubaoWebSearch(query, source = 'insprira-rewrite') {
@@ -1883,48 +1669,6 @@ async function runLocalAgent(body) {
   }
 }
 
-async function getOfficialQuota() {
-  if (!REDFOX_WEB_COOKIE) return { configured: false, error: '未配置 REDFOX_WEB_COOKIE' };
-  try {
-    const response = await fetch(`https://${REDFOX_HOST}/story/web/points/overview`, {
-      method: 'GET',
-      headers: {
-        Accept: 'application/json',
-        Cookie: REDFOX_WEB_COOKIE,
-      },
-      signal: AbortSignal.timeout(15000),
-    });
-    const payload = await response.json();
-    if (!response.ok || ![0, 200, 2000].includes(payload?.code)) {
-      throw new Error(payload?.msg || `HTTP ${response.status}`);
-    }
-    return { configured: true, data: payload.data ?? payload };
-  } catch (error) {
-    return { configured: true, error: error.message };
-  }
-}
-
-function usageSummary() {
-  const now = Date.now();
-  const dayStart = new Date();
-  dayStart.setHours(0, 0, 0, 0);
-  const summarize = since => db.prepare(`
-    SELECT COUNT(*) AS requests,
-      SUM(CASE WHEN cached = 0 THEN 1 ELSE 0 END) AS calls,
-      SUM(CASE WHEN cached = 1 THEN 1 ELSE 0 END) AS cache_hits,
-      SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END) AS errors
-    FROM api_usage WHERE created_at >= ?
-  `).get(since);
-  return {
-    today: summarize(dayStart.getTime()),
-    last30Days: summarize(now - 30 * 24 * 60 * 60 * 1000),
-    topEndpoints: db.prepare(`
-      SELECT endpoint, COUNT(*) AS calls
-      FROM api_usage WHERE created_at >= ? AND cached = 0
-      GROUP BY endpoint ORDER BY calls DESC LIMIT 8
-    `).all(now - 30 * 24 * 60 * 60 * 1000),
-  };
-}
 
 
 function hotBatchId(platform, dataDate, startedAt) {
@@ -2463,114 +2207,6 @@ function setLocalData(module, key, data, expiresAt = null) {
   `).run(module, key, JSON.stringify(data), Date.now(), expiresAt);
 }
 
-const NOTIFICATION_CHANNELS = new Set(['discord', 'bark', 'webhook', 'dingtalk', 'feishu', 'telegram']);
-
-function notificationConfigs() {
-  return getLocalData('settings', 'notifications') || {};
-}
-
-function publicNotificationConfigs() {
-  return Object.fromEntries(Object.entries(notificationConfigs()).map(([channel, config]) => [
-    channel,
-    {
-      enabled: Boolean(config.enabled),
-      configured: Boolean(config.url || (config.botToken && config.chatId)),
-      url: config.url || '',
-      botToken: config.botToken || '',
-      chatId: config.chatId || '',
-    },
-  ]));
-}
-
-function saveNotificationConfigs(input) {
-  const current = notificationConfigs();
-  for (const channel of NOTIFICATION_CHANNELS) {
-    if (!input[channel]) continue;
-    const value = input[channel];
-    current[channel] = {
-      enabled: Boolean(value.enabled),
-      url: String(value.url || '').trim() || current[channel]?.url || '',
-      botToken: String(value.botToken || '').trim() || current[channel]?.botToken || '',
-      chatId: String(value.chatId || '').trim() || current[channel]?.chatId || '',
-    };
-  }
-  setLocalData('settings', 'notifications', current);
-  return publicNotificationConfigs();
-}
-
-function postJsonUrl(rawUrl, payload) {
-  const target = new URL(rawUrl);
-  const transport = target.protocol === 'https:' ? https : http;
-  return new Promise((resolve, reject) => {
-    const body = JSON.stringify(payload);
-    const req = transport.request(target, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
-      timeout: 15000,
-    }, response => {
-      let text = '';
-      response.on('data', chunk => { text += chunk; });
-      response.on('end', () => {
-        if ((response.statusCode || 500) >= 300) reject(new Error(`通知 HTTP ${response.statusCode}`));
-        else resolve(text);
-      });
-    });
-    req.on('timeout', () => req.destroy(new Error('通知请求超时')));
-    req.on('error', reject);
-    req.write(body);
-    req.end();
-  });
-}
-
-async function sendNotification(channel, config, title, message) {
-  if (!NOTIFICATION_CHANNELS.has(channel)) throw new Error('不支持的通知渠道');
-  if (channel === 'telegram') {
-    if (!config.botToken || !config.chatId) throw new Error('请配置 Bot Token 和 Chat ID');
-    return postJsonUrl(`https://api.telegram.org/bot${config.botToken}/sendMessage`, {
-      chat_id: config.chatId,
-      text: `${title}\n${message}`,
-    });
-  }
-  if (!config.url) throw new Error('请配置通知地址');
-  if (channel !== 'bark' && !config.url.startsWith('https:')) throw new Error('该通知地址必须使用 HTTPS');
-  const payload = channel === 'discord'
-    ? { content: `**${title}**\n${message}` }
-    : channel === 'dingtalk'
-      ? { msgtype: 'text', text: { content: `${title}\n${message}` } }
-      : channel === 'feishu'
-        ? { msg_type: 'text', content: { text: `${title}\n${message}` } }
-        : channel === 'bark'
-          ? { title, body: message }
-          : { title, message, text: `${title}\n${message}` };
-  return postJsonUrl(config.url, payload);
-}
-
-async function broadcastNotification(title, message) {
-  const configs = notificationConfigs();
-  const targets = [];
-  for (const [channel, config] of Object.entries(configs)) {
-    if (!config?.enabled) continue;
-    if (channel === 'telegram') {
-      if (config.botToken && config.chatId) targets.push([channel, config]);
-    } else if (config.url) {
-      targets.push([channel, config]);
-    }
-  }
-  if (!targets.length) return { sent: 0, failed: 0 };
-  let sent = 0;
-  let failed = 0;
-  await Promise.all(targets.map(async ([channel, config]) => {
-    try {
-      await sendNotification(channel, config, title, message);
-      sent += 1;
-    } catch (error) {
-      failed += 1;
-      console.warn(`[notify] ${channel} 推送失败:`, error.message);
-    }
-  }));
-  return { sent, failed };
-}
-
 function normalizeTrendKey(value) {
   return String(value || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
 }
@@ -2954,174 +2590,6 @@ async function fetchKeywordHotArticles(keywords, options = {}) {
   return { articles, searched, apiCalls };
 }
 
-const TOOL_FUNCTIONS = {
-  web_search: async (args) => {
-    const query = args?.query || args?.q || args?.search_query || '';
-    if (!query) return JSON.stringify({ error: 'web_search 需要提供 query 参数' });
-    try {
-      const data = await doDoubaoWebSearch(query);
-      logAction('web_search', 'function-call', 'redfox-api', { query }, 1, 0);
-      return formatDoubaoSearchResults(data);
-    } catch (e) {
-      return JSON.stringify({ error: `web_search 失败: ${e.message}` });
-    }
-  },
-};
-
-async function callLlm(messages, options = {}) {
-  const apiKey = process.env.LLM_API_KEY;
-  const baseUrl = (process.env.LLM_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '');
-  const primaryModel = process.env.LLM_MODEL || 'gpt-4.1-mini';
-  const fallbackModel = process.env.LLM_FALLBACK_MODEL || '';
-  if (!apiKey) throw new Error('未配置 LLM_API_KEY');
-  const tools = Array.isArray(options.tools) && options.tools.length ? options.tools : null;
-  const maxToolRounds = options.maxToolRounds ?? 3;
-  // 普通调用 30s，带 web_search 等工具要等搜索结果，超时放宽到 60s
-  const baseTimeoutMs = tools ? 60000 : 30000;
-  const timeoutMs = options.timeoutMs ?? baseTimeoutMs;
-
-  // 单次 chat.completions 调用：主模型失败且配了 fallback，则切 fallback 重试
-  const doCall = async (modelName, tMs) => {
-    const body = {
-      model: modelName,
-      messages,
-      temperature: options.temperature ?? 0.7,
-      max_tokens: options.maxTokens ?? 4096,
-    };
-    if (tools) {
-      body.tools = tools;
-      body.tool_choice = options.toolChoice || 'auto';
-    } else if (options.json) {
-      body.response_format = { type: 'json_object' };
-    }
-    const response = await fetch(`${baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(tMs),
-    });
-    const payload = await response.json();
-    if (!response.ok) {
-      const errMsg = payload?.error?.message || `LLM HTTP ${response.status}`;
-      const err = new Error(errMsg);
-      err.status = response.status;
-      err.isLlmError = true;
-      throw err;
-    }
-    return payload.choices?.[0]?.message || {};
-  };
-
-  // 单轮对话（无 tools）：主模型失败可回退 fallback
-  if (!tools) {
-    try {
-      const msg = await doCall(primaryModel, timeoutMs);
-      return msg.content || '';
-    } catch (primaryErr) {
-      if (!fallbackModel || fallbackModel === primaryModel) throw primaryErr;
-      const retriable = primaryErr.name === 'TimeoutError' || primaryErr.name === 'AbortError'
-        || /network|ECONN|fetch failed|429|rate/i.test(primaryErr.message);
-      if (!retriable) throw primaryErr;
-      logErr('[callLlm] 主模型失败切 fallback', `${primaryModel} -> ${fallbackModel}: ${primaryErr.message}`);
-      const msg = await doCall(fallbackModel, timeoutMs * 2);
-      return msg.content || '';
-    }
-  }
-
-  // 带 tools：走多轮循环（每轮重试主模型，失败不切 fallback，避免中途切换破坏 tool_call 链）
-  const currentMessages = [...messages];
-  for (let round = 0; round <= maxToolRounds; round++) {
-    let msg;
-    try {
-      msg = await doCall(primaryModel, timeoutMs);
-    } catch (err) {
-      logErr('[callLlm] tool round 失败', `round=${round} model=${primaryModel}: ${err.message}`);
-      throw err;
-    }
-    const toolCalls = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];
-    if (!toolCalls.length) {
-      return msg.content || '';
-    }
-    // 把 assistant 消息（含 tool_calls）推回 history
-    currentMessages.push({
-      role: 'assistant',
-      content: msg.content || '',
-      tool_calls: toolCalls.map(tc => ({
-        id: tc.id,
-        type: 'function',
-        function: { name: tc.function?.name, arguments: tc.function?.arguments },
-      })),
-    });
-    // 逐个执行 tool_call
-    for (const tc of toolCalls) {
-      const fnName = tc.function?.name;
-      let args = {};
-      try { args = JSON.parse(tc.function?.arguments || '{}'); } catch {}
-      const handler = TOOL_FUNCTIONS[fnName];
-      let result;
-      if (!handler) {
-        result = JSON.stringify({ error: `未知工具 ${fnName}` });
-      } else {
-        try { result = await handler(args); } catch (e) { result = JSON.stringify({ error: e.message }); }
-      }
-      currentMessages.push({ role: 'tool', tool_call_id: tc.id, name: fnName, content: result });
-    }
-    // 工具调用也算 LLM 一次
-  }
-  logErr('[callLlm] 工具调用轮次超限', `rounds=${maxToolRounds}, finish=${lastFinishReason}`);
-  throw new Error('工具调用轮次超限');
-}
-
-// 解析 LLM 输出的 JSON：去 code fence / <think> 块，截断时尝试找最后一个 } 修复
-function parseLlmJson(content) {
-  let cleaned = String(content || '')
-    .trim()
-    // 去掉 code fence
-    .replace(/^```(?:json)?\s*/i, '')
-    .replace(/\s*```$/, '')
-    // 去掉 MiniMax 推理模型输出的 <think>...</think> 或 <think>...</think>
-    .replace(/<think>[\s\S]*?<\/think>\s*/gi, '')
-    .replace(/<think>[\s\S]*?<think>/gi, '')
-    .trim();
-  try {
-    return JSON.parse(cleaned);
-  } catch (err) {
-    if (err.message.includes('Unterminated') || err.message.includes('Unexpected end')) {
-      for (let i = cleaned.length - 1; i >= 0; i--) {
-        if (cleaned[i] === '}') {
-          try {
-            const r = JSON.parse(cleaned.slice(0, i + 1));
-            console.warn('[parseLlmJson] JSON 截断修复 pos=' + i);
-            return r;
-          } catch {}
-        }
-      }
-    }
-    throw new Error('JSON 解析失败: ' + err.message + ' | 内容片段: ' + cleaned.slice(0, 200));
-  }
-}
-
-async function callLlmJson(messages, options = {}) {
-  const callOptions = { ...options, json: true };
-  // 如果开了联网，关掉 json_object 强制（与 tools 冲突）
-  if (callOptions.tools) delete callOptions.json;
-  const content = await callLlm(messages, callOptions);
-  return parseLlmJson(content);
-}
-
-const WEB_SEARCH_TOOL = [{
-  type: 'function',
-  function: {
-    name: 'web_search',
-    description: 'Use Doubao WebSearch to look up latest information. Call this whenever you need current data, product features, news, user reviews, or anything the LLM training data may not cover or that may be outdated.',
-    parameters: {
-      type: 'object',
-      properties: {
-        query: { type: 'string', description: 'Search keywords; be specific (e.g. product name + feature)' },
-      },
-      required: ['query'],
-    },
-  },
-}];
 
 function localDateTime(date = new Date()) {
   return `${localDate(date)} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}:${String(date.getSeconds()).padStart(2, '0')}`;
@@ -3451,10 +2919,6 @@ function getInspirationSourceMeta() {
 
 function getInspirationSourceKeys() {
   return new Set(getInspirationSourceMeta().map(s => s.key));
-}
-
-function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, Number(value) || 0));
 }
 
 function normalizeTerms(values) {
