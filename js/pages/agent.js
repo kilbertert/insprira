@@ -132,7 +132,7 @@ function renderSkillUpdateStatus() {
     return;
   }
   if (skillUpdateStatus.available) {
-    host.textContent = `发现更新：新增 ${skillUpdateStatus.added.length}、修改 ${skillUpdateStatus.changed.length}、删除 ${skillUpdateStatus.removed.length}`;
+    host.textContent = `发现更新：新增 ${skillUpdateStatus.addedSlugs.length}、修改 ${skillUpdateStatus.changedSlugs.length}、删除 ${skillUpdateStatus.removedSlugs.length}`;
     host.className = 'text-[11px] text-amber-300';
     button.classList.remove('hidden');
   } else {

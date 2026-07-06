@@ -30,8 +30,9 @@ export async function renderDashboard() {
       const c = view[containerId];
       const s = view[statusId];
       if (!c) return;
-      if (result?.length) {
-        const list = result.slice(0, 5).map(item => adapt(item.raw));
+      const items = Array.isArray(result?.data) ? result.data : [];
+      if (items.length) {
+        const list = items.slice(0, 5).map(item => adapt(item.raw));
         list.forEach((it, i) => it._rank = i + 1);
         c.innerHTML = list.map(it => `
           <a class="flex items-center gap-2.5 hover:bg-white/[0.03] -mx-2 px-2 py-1.5 rounded cursor-pointer" data-action="showDetail" data-plat="${esc(it.plat)}" data-work-id="${esc(it.workId)}">
@@ -52,7 +53,7 @@ export async function renderDashboard() {
     fill('dash-xhs', 'dash-xhs-status', xhsResult, adaptXHS, '❤️');
     fill('dash-gzh', 'dash-gzh-status', gzhResult, adaptGZH, '👁');
 
-    if (view['stat-hot']) view['stat-hot'].textContent = kwResult?.length || '—';
+    if (view['stat-hot']) view['stat-hot'].textContent = kwResult?.data?.length || '—';
 
     const trackers = getSortedTrackers();
     if (view['stat-track']) view['stat-track'].textContent = trackers.length;

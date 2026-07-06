@@ -609,9 +609,17 @@ export async function submitInspirationConfig(id) {
     terms: [...parseTermInput('ic-core','core'), ...parseTermInput('ic-white','white'), ...parseTermInput('ic-black','black')],
   };
   try {
-    await localApi(id ? `inspiration-configs/${id}` : 'inspiration-configs', { method: id ? 'PUT' : 'POST', body });
+    const saved = await localApi(id ? `inspiration-configs/${id}` : 'inspiration-configs', { method: id ? 'PUT' : 'POST', body });
     window._inspirationConfigModal?.remove();
-    toast('主题配置已保存', 'success');
+    const skip = saved?.skipped;
+    if (skip && (skip.sources?.length || skip.terms?.length)) {
+      const parts = [];
+      if (skip.sources?.length) parts.push(`忽略 ${skip.sources.length} 个未知数据源`);
+      if (skip.terms?.length) parts.push(`忽略 ${skip.terms.length} 个非法关键词`);
+      toast(`已保存，${parts.join('，')}`, 'warning');
+    } else {
+      toast('主题配置已保存', 'success');
+    }
     await renderSettings();
   } catch (e) { toast(e.message, 'error'); }
 }

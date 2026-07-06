@@ -88,6 +88,11 @@ const execFileAsync = promisify(execFile);
 const ENV_FILE = path.join(__dirname, '.env');
 loadEnvFile(ENV_FILE);
 
+// 时区：必须放在最早期，影响所有 new Date()、cron 调度与 data_date 边界
+// 必须在任何 Date 方法（getHours/getDate 等）被调用前执行
+const USER_TIMEZONE = process.env.USER_TIMEZONE || 'Asia/Shanghai';
+if (process.env.TZ !== USER_TIMEZONE) process.env.TZ = USER_TIMEZONE;
+
 const PORT = Number(process.env.PORT || 8080);
 const HOST = process.env.HOST || '0.0.0.0';
 const ENABLE_SCHEDULER = process.env.ENABLE_SCHEDULER !== 'false';

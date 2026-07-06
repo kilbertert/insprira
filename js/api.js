@@ -128,6 +128,9 @@ export async function localApi(path, options = {}) {
   if (!response.ok || payload.ok === false) {
     throw new Error(payload.error || `本地服务请求失败（HTTP ${response.status}）`);
   }
+  // 无 data 包装的端点（/version /status /redfox/apply 等）保留 fallback；
+  // 注意：hot/list 类端点必须用 { data: hotListPayload(...) }，不能用 spread，
+  // 否则这里会把数组当 data 拆走，丢失 sourceMode/dataDate/cronExpr 等元数据
   if (payload.data === undefined) return payload;
 
   const data = payload.data;

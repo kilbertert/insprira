@@ -58,14 +58,13 @@ export async function renderHotlist() {
   topTime.textContent = '加载中…';
 
   try {
-    const [kwResult] = await Promise.all([
-      localApi('hot/keywords'),
-    ]);
+    const kwResult = await localApi('hot/keywords');
     if (!top.isConnected) return;
+    const kwList = kwResult?.data || [];
 
-    if (kwResult?.length) {
+    if (kwList.length) {
       hotCache.hotKeyword = kwResult;
-      top.innerHTML = kwResult.slice(0, 12).map((kw, i) => {
+      top.innerHTML = kwList.slice(0, 12).map((kw, i) => {
         const plats = kw.raw?.plats || [];
         return `
         <div class="flex items-center gap-2 p-2 bg-white/[0.02] rounded-lg card border border-white/5">
@@ -140,7 +139,7 @@ export async function renderHotTab(tab) {
     if (!hotCache.hotKeyword) {
       try { hotCache.hotKeyword = await localApi('hot/keywords'); } catch {}
     }
-    const kw = hotCache.hotKeyword || [];
+    const kw = (hotCache.hotKeyword?.data) || [];
     metaEl.innerHTML = `<div class="text-[11px] text-gray-400">基于 hourly 收录的 7 大平台热搜数据聚合 · 共 ${kw.length} 条</div>`;
     if (!kw.length) {
       content.innerHTML = '<div class="text-center text-gray-500 py-8 text-sm">暂无热点数据，<button class="text-pink-400 underline" data-action="syncHotKeywords">立即刷新</button></div>';
@@ -182,7 +181,7 @@ export async function renderHotTab(tab) {
           自动刷新：${result.cronEnabled ? '开' : '关'}
         </button>
       </div>`;
-    if (!Array.isArray(result) || result.length === 0) {
+    if (!Array.isArray(result?.data) || result.data.length === 0) {
       content.innerHTML = `
         <div class="text-center text-gray-400 py-8 text-sm">
           <div class="mb-3">暂无 ${tabNames[tab] || tab} 本地数据</div>
@@ -195,23 +194,23 @@ export async function renderHotTab(tab) {
     const adapter = platformCfg?.adapter;
     let list = [];
     if (tab === 'dy') {
-      list = result.slice(0, 20).map(item => adaptDY(item.raw));
+      list = result.data.slice(0, 20).map(item => adaptDY(item.raw));
     } else if (tab === 'xhs') {
-      list = result.slice(0, 20).map(item => adaptXHS(item.raw));
+      list = result.data.slice(0, 20).map(item => adaptXHS(item.raw));
     } else if (tab === 'gzh') {
-      list = result.slice(0, 20).map(item => adaptGZH(item.raw));
+      list = result.data.slice(0, 20).map(item => adaptGZH(item.raw));
     } else if (tab === 'ai-gzh') {
-      list = result.slice(0, 50).map(item => adaptAIGZH(item.raw));
+      list = result.data.slice(0, 50).map(item => adaptAIGZH(item.raw));
     } else if (tab === 'ai-bili') {
-      list = result.slice(0, 50).map(item => adaptAIBili(item.raw));
+      list = result.data.slice(0, 50).map(item => adaptAIBili(item.raw));
     } else if (tab === 'ai-xhs') {
-      list = result.slice(0, 50).map(item => adaptAIXHS(item.raw));
+      list = result.data.slice(0, 50).map(item => adaptAIXHS(item.raw));
     } else if (adapter === 'aiFeed') {
-      list = result.slice(0, 50).map(item => adaptAiFeed(item.raw, tab));
+      list = result.data.slice(0, 50).map(item => adaptAiFeed(item.raw, tab));
     }
     list = list.filter(item => item.title);
     list.forEach((it, i) => it._rank = i + 1);
-    const tabDate = result.dataDate || (result[0]?.snapshotDate || '');
+    const tabDate = result.dataDate || (result.data[0]?.snapshotDate || '');
     const dateStr = tabDate ? tabDate.slice(5).replace('-', '/') : '';
     const dateHtml = dateStr ? `<div class="text-[10px] text-gray-600 mb-2">榜单所属日期：${dateStr}</div>` : '';
     content.innerHTML = dateHtml + list.map(renderListItem).join('');
