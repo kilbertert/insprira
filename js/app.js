@@ -21,6 +21,7 @@ import { renderSkills, filterSkills, openSkillDetail, openAgentWithSkill, checkS
 import { gotoPage, refreshCurrent, doGlobalSearch, toggleSidebar, openMobileSidebar, closeMobileSidebar } from './router.js';
 import { initErrorBoundary } from './errorBoundary.js';
 import { loadCurrentAccount, openAccountModal, saveAccountProfile, changeAccountPassword, logoutAccount } from './account.js';
+import { initTheme, toggleTheme } from './theme.js';
 
 // ============= Item Cache handlers 注册 ============
 registerItemCacheHandlers({
@@ -30,6 +31,7 @@ registerItemCacheHandlers({
 });
 
 initErrorBoundary();
+initTheme();
 
 // 页面加载即拉版本号，更新侧边栏（登录前也显示）
 localApi('version').then(r => {
@@ -249,6 +251,7 @@ registerAction('refreshCurrent', () => refreshCurrent());
 registerAction('toggleSidebar', () => toggleSidebar());
 registerAction('openMobileSidebar', () => openMobileSidebar());
 registerAction('closeMobileSidebar', () => closeMobileSidebar());
+registerAction('toggleTheme', () => { toggleTheme(); initIcons(document.body); });
 registerAction('gotoPage', (el) => gotoPage(el.dataset.page));
 registerAction('doSearch', () => doSearch());
 registerAction('goBackOrFallback', (_, d) => history.length > 1 ? history.back() : gotoPage(d.fallbackPage || 'dashboard'));

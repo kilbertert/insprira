@@ -3,8 +3,25 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="color-scheme" content="dark light" />
 <title>灵感熔炉 · insprira</title>
 <link rel="icon" href="data:," />
+<script>
+  // 提前应用主题，避免 FOUC；详细逻辑在 js/theme.js
+  (function () {
+    try {
+      var stored = localStorage.getItem('furnace.theme');
+      var theme = stored ? JSON.parse(stored) : null;
+      if (theme !== 'dark' && theme !== 'light') {
+        theme = (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark';
+      }
+      document.documentElement.setAttribute('data-theme', theme);
+      document.documentElement.style.colorScheme = theme;
+    } catch (e) {
+      document.documentElement.setAttribute('data-theme', 'dark');
+    }
+  })();
+</script>
 <script src="vendor/chart.umd.min.js" defer></script>
 <script src="vendor/lucide.min.js" defer></script>
 <script src="vendor/marked.min.js" defer></script>
@@ -16,7 +33,11 @@
 
 <!-- ============= 登录页 ============= -->
 <div id="page-login" class="page active">
-  <div class="min-h-screen flex items-center justify-center p-4">
+  <div class="min-h-screen flex items-center justify-center p-4 relative">
+    <button class="theme-toggle absolute top-4 right-4" data-action="toggleTheme" title="切换主题">
+      <i data-lucide="moon" class="w-4 h-4 icon-moon"></i>
+      <i data-lucide="sun" class="w-4 h-4 icon-sun"></i>
+    </button>
     <div class="w-full max-w-md">
       <div class="text-center mb-8">
         <div class="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500 mb-4 shadow-lg">
@@ -65,8 +86,18 @@
             <div class="text-[10px] text-gray-500" data-app-version>加载中…</div>
           </div>
         </div>
-        <button class="btn desktop-only sidebar-toggle-btn p-1.5 bg-white/10 border border-white/20 text-white hover:bg-white/20 hover:text-white shadow-sm" data-action="toggleSidebar" title="收起/展开侧边栏">
-          <i data-lucide="panel-left-close" class="w-5 h-5 sidebar-collapse-icon"></i>
+        <div class="flex items-center gap-1 desktop-only">
+          <button class="theme-toggle" data-action="toggleTheme" title="切换主题">
+            <i data-lucide="moon" class="w-4 h-4 icon-moon"></i>
+            <i data-lucide="sun" class="w-4 h-4 icon-sun"></i>
+          </button>
+          <button class="btn sidebar-toggle-btn p-1.5 bg-white/10 border border-white/20 text-white hover:bg-white/20 hover:text-white shadow-sm" data-action="toggleSidebar" title="收起/展开侧边栏">
+            <i data-lucide="panel-left-close" class="w-5 h-5 sidebar-collapse-icon"></i>
+          </button>
+        </div>
+        <button class="theme-toggle mobile-only" data-action="toggleTheme" title="切换主题">
+          <i data-lucide="moon" class="w-4 h-4 icon-moon"></i>
+          <i data-lucide="sun" class="w-4 h-4 icon-sun"></i>
         </button>
       </div>
       <nav class="flex-1 p-3 space-y-1 overflow-y-auto">
