@@ -53,6 +53,7 @@ export async function openEnvModal() {
       ['LLM_API_KEY','LLM API Key','password'],
       ['LLM_MODEL','LLM 模型','text'],
       ['KB_ENCRYPTION_KEY','知识库加密密钥','password','用于加密 Notion 凭证。已有数据请勿随意修改。'],
+      ['GITHUB_API_TOKEN','GitHub API Token','password','可选。Skill 中心更新走 GitHub API，未配置时匿名请求频率 60/hr 容易 403；配置后提升到 5000/hr。Personal access token 即可，无需勾选任何权限。'],
       ['ENABLE_SCHEDULER','启用调度器','text',''],
     ];
     const modal = document.createElement('div');
