@@ -352,6 +352,25 @@
 .to-pink-500{--tw-gradient-to:#fde047;}
 .from-pink-500{--tw-gradient-from:#fbbf24;}
 .to-orange-500{--tw-gradient-to:#f97316;}
+
+/* ============ 紫色 light-mode 修正 ============
+   原生 Tailwind purple-300 (#d8b4fe) 是浅薰衣草色，在 cream 底色 (#fefcf7) 上
+   几乎不可见。purple-700 (#7e22ce) 在两种主题下都有足够对比度。
+   dark mode 下原生 purple-300 已经够亮，无需 override。 */
+:root[data-theme="light"] .text-purple-300{color:#7e22ce;}
+:root[data-theme="light"] .text-purple-400{color:#6b21a8;}
+:root[data-theme="light"] .text-purple-200{color:#9333ea;}
+:root[data-theme="light"] .bg-purple-500\/5{background-color:rgba(126,34,206,.06);}
+:root[data-theme="light"] .bg-purple-500\/10{background-color:rgba(126,34,206,.10);}
+:root[data-theme="light"] .bg-purple-500\/15{background-color:rgba(126,34,206,.12);}
+:root[data-theme="light"] .bg-purple-500\/20{background-color:rgba(126,34,206,.16);}
+:root[data-theme="light"] .bg-purple-500\/30{background-color:rgba(126,34,206,.22);}
+:root[data-theme="light"] .border-purple-500\/20{border-color:rgba(126,34,206,.30);}
+:root[data-theme="light"] .border-purple-500\/30{border-color:rgba(126,34,206,.45);}
+:root[data-theme="light"] .border-purple-500\/40{border-color:rgba(126,34,206,.60);}
+:root[data-theme="light"] .border-purple-500\/50{border-color:rgba(126,34,206,.75);}
+:root[data-theme="light"] .border-purple-500{border-color:#7e22ce;}
+:root[data-theme="light"] .accent-purple-500{accent-color:#7e22ce;}
 .bg-cyan-500\/10{background-color:rgba(20,184,166,.10);}
 .bg-cyan-500\/20{background-color:rgba(20,184,166,.20);}
 .border-cyan-500\/20{border-color:rgba(20,184,166,.25);}
