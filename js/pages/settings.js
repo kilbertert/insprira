@@ -116,33 +116,31 @@ export async function loadQuota() {
     const quota = await localApi('quota');
     const today = quota.usage.today || {};
     const month = quota.usage.last30Days || {};
-    const official = quota.official || {};
-    const points = official.data || {};
-    const officialView = official.data
-      ? `<div class="mt-3">
-          <div class="text-emerald-300 mb-2 font-medium">RedFox 官方额度</div>
-          <div class="grid grid-cols-2 gap-2">
-            ${[
-              ['可用总点数', points.totalAvailablePoints, 'text-emerald-300'],
-              ['付费点数', points.paidAvailablePoints, 'text-cyan-300'],
-              ['免费点数', points.freeAvailablePoints, 'text-purple-300'],
-              ['今日消耗', points.todayConsumption, 'text-amber-300'],
-              ['本月消耗', points.monthConsumption, 'text-orange-300'],
-              ['累计消耗', points.totalConsumption, 'text-pink-300'],
-            ].map(([label,value,color]) => `<div class="bg-white/[0.035] rounded-lg p-2.5 min-w-0"><div class="text-[10px] text-gray-500 whitespace-nowrap">${label}</div><div class="text-base font-bold mt-1 ${color}">${value ?? '--'}</div></div>`).join('')}
-          </div>
-        </div>`
-      : `<div class="mt-3 p-3 bg-white/[0.02] rounded-lg text-gray-500">
-          官方剩余点数暂不可读：${esc(official.error || '未知错误')}。需要在服务端 .env 配置 REDFOX_WEB_COOKIE，API Key 本身不包含官网账户余额权限。
-        </div>`;
+    const points = quota.official?.data || null;
+    // 8 个指标 · 4×2 紧凑网格，自用调用 + RedFox 额度合一，不分模块
+    // 官方额度不可读时显示 "--"，不阻断自用调用数据
+    const cells = [
+      ['今日调用', today.calls ?? 0, ''],
+      ['30天调用', month.calls ?? 0, ''],
+      ['总点数', points?.totalAvailablePoints, 'text-emerald-300'],
+      ['免费',     points?.freeAvailablePoints,  'text-purple-300'],
+      ['付费',     points?.paidAvailablePoints,  'text-cyan-300'],
+      ['今日消耗', points?.todayConsumption,     'text-amber-300'],
+      ['本月消耗', points?.monthConsumption,     'text-orange-300'],
+      ['累计消耗', points?.totalConsumption,     'text-pink-300'],
+    ];
+    const officialNote = !points && quota.official?.error
+      ? `<div class="text-[10px] text-gray-500 mt-1.5 leading-relaxed">官方额度未读取：${esc(quota.official.error)}。在 .env 配 REDFOX_WEB_COOKIE 可解锁。</div>`
+      : '';
     host.innerHTML = `
-      <div class="grid grid-cols-2 gap-2">
-        <div class="bg-white/[0.025] rounded-lg p-2.5 min-w-0"><div class="text-gray-500 whitespace-nowrap text-[10px]">今日真实 API</div><div class="text-lg font-bold mt-1">${today.calls || 0}</div></div>
-        <div class="bg-white/[0.025] rounded-lg p-2.5 min-w-0"><div class="text-gray-500 whitespace-nowrap text-[10px]">今日缓存命中</div><div class="text-lg font-bold mt-1">${today.cache_hits || 0}</div></div>
-        <div class="bg-white/[0.025] rounded-lg p-2.5 min-w-0"><div class="text-gray-500 whitespace-nowrap text-[10px]">30 天真实 API</div><div class="text-lg font-bold mt-1">${month.calls || 0}</div></div>
-        <div class="bg-white/[0.025] rounded-lg p-2.5 min-w-0"><div class="text-gray-500 whitespace-nowrap text-[10px]">30 天错误</div><div class="text-lg font-bold mt-1">${month.errors || 0}</div></div>
+      <div class="grid grid-cols-4 gap-1.5">
+        ${cells.map(([label, value, color]) => `
+          <div class="bg-white/[0.035] rounded-md p-1.5 min-w-0">
+            <div class="text-[10px] text-gray-500 whitespace-nowrap leading-tight">${label}</div>
+            <div class="text-base font-bold mt-0.5 ${color} leading-tight">${value ?? '--'}</div>
+          </div>`).join('')}
       </div>
-      ${officialView}`;
+      ${officialNote}`;
   } catch (e) {
     host.innerHTML = `<span class="text-red-400">${esc(e.message)}</span>`;
   }
