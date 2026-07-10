@@ -433,6 +433,9 @@
 .stat-num{font-family:'Manrope','Inter',sans-serif;font-weight:800;font-feature-settings:'tnum';letter-spacing:-.02em;color:var(--brand-2);}
 .text-2xl.font-bold[id^="stat-"]{font-family:'Manrope','Inter',sans-serif;font-weight:800;font-feature-settings:'tnum';letter-spacing:-.025em;}
 
+/* cron 任务名 · 小字号也走 Manrope 字族（保持 ember 视觉一致） */
+#cron-list .truncate{font-family:'Manrope','Inter','PingFang SC',sans-serif;font-weight:600;letter-spacing:-.005em;}
+
 /* 登录/侧边栏 brand mark 渐变（覆盖 from-indigo via-purple to-pink） */
 .from-indigo-500.via-purple-500.to-pink-500{
   --tw-gradient-from:#f97316;
