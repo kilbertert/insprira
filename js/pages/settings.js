@@ -53,15 +53,15 @@ export async function openEnvModal() {
       ['LLM_API_KEY','LLM API Key','password'],
       ['LLM_MODEL','LLM 模型','text'],
       ['KB_ENCRYPTION_KEY','知识库加密密钥','password','用于加密 Notion 凭证。已有数据请勿随意修改。'],
-      ['GITHUB_API_TOKEN','GitHub API Token','password','可选。Skill 中心更新走 GitHub API，未配置时匿名请求频率 60/hr 容易 403；配置后提升到 5000/hr。Personal access token 即可，无需勾选任何权限。'],
+      ['GITHUB_API_TOKEN','GitHub API Token','password','可选。Skill 中心更新走 GitHub API，未配置时匿名请求频率 60/hr 容易 403；配置后提升到 5000/hr。Personal access token 即可，无需勾选任何权限。','https://github.com/settings/tokens'],
       ['ENABLE_SCHEDULER','启用调度器','text',''],
     ];
     const modal = document.createElement('div');
     modal.className = 'modal-mask';
     modal.innerHTML = `<div class="modal" style="max-width:760px;max-height:90vh;overflow:auto">
       <div class="flex items-center justify-between mb-4"><div><h2 class="text-lg font-bold">维护 .env</h2><p class="text-[11px] text-gray-500 mt-1">敏感字段留空将保留当前值；保存后需要重启服务生效。</p></div><button class="btn btn-ghost py-1 px-2" data-action="closeModal"><i data-lucide="x" class="w-4 h-4"></i></button></div>
-      <form id="env-config-form"><div class="grid grid-cols-1 md:grid-cols-2 gap-3">${fields.map(([key,label,type,tip='']) => `
-        <div><label class="text-xs text-gray-400 flex items-center gap-1.5 mb-1">${label}${tip ? `<span class="help-tip" data-tip="${esc(tip)}">?</span>` : ''} ${config[key]?.configured ? '<span class="text-emerald-400">已配置</span>' : ''}</label><input class="input font-mono text-xs" type="${type}" autocomplete="${type === 'password' ? 'new-password' : 'off'}" data-env-key="${key}" placeholder="${config[key]?.secret && config[key]?.configured ? '留空保留原值' : ''}" /></div>
+      <form id="env-config-form"><div class="grid grid-cols-1 md:grid-cols-2 gap-3">${fields.map(([key,label,type,tip='',link='']) => `
+        <div><label class="text-xs text-gray-400 flex items-center gap-1.5 mb-1">${label}${tip ? `<span class="help-tip" data-tip="${esc(tip)}">?</span>` : ''}${link ? ` <a href="${esc(link)}" target="_blank" rel="noopener" class="text-cyan-300 hover:underline text-[11px]">申请</a>` : ''} ${config[key]?.configured ? '<span class="text-emerald-400">已配置</span>' : ''}</label><input class="input font-mono text-xs" type="${type}" autocomplete="${type === 'password' ? 'new-password' : 'off'}" data-env-key="${key}" placeholder="${config[key]?.secret && config[key]?.configured ? '留空保留原值' : ''}" /></div>
       `).join('')}</div>
       <div class="flex justify-end mt-5"><button type="submit" class="btn btn-primary" data-action="saveEnvConfig"><i data-lucide="save" class="w-3.5 h-3.5"></i>保存 .env</button></div></form>
     </div>`;
