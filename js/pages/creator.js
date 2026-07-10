@@ -128,6 +128,17 @@ export function clearCreatorSource() {
   toast('已清除来源绑定', 'success');
 }
 
+export function toggleCreatorTool(_, d) {
+  const key = d?.tool;
+  if (!key) return;
+  const panel = document.getElementById(`${key}-panel`);
+  const chevron = document.getElementById(`${key}-chevron`);
+  if (!panel) return;
+  const willOpen = panel.classList.contains('hidden');
+  panel.classList.toggle('hidden');
+  if (chevron) chevron.style.transform = willOpen ? 'rotate(180deg)' : '';
+}
+
 export function sendToCreator(item) {
   LS.set('creatorSource', item);
   toast('已发送到 AI 创作助手', 'success');
