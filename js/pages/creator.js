@@ -98,6 +98,9 @@ export function renderCreator() {
   loadStyleProfiles();
   bindCreatorModeTabs();
   bindPlatformSkillBadge();
+  bindPlatformPills();
+  bindTonePills();
+  bindCopyButtons();
 }
 
 async function loadStyleProfiles() {
@@ -325,6 +328,60 @@ export function copyRewrite() {
   navigator.clipboard.writeText([title, intro, content].filter(Boolean).join('\n\n'))
     .then(() => toast('成稿已复制', 'success'))
     .catch(() => toast('复制失败', 'error'));
+}
+
+function bindPlatformPills() {
+  const sel = document.getElementById('rewritePlatform');
+  const pills = document.querySelectorAll('#platform-pills .platform-pill');
+  if (!sel || !pills.length || sel.dataset.pillsBound) return;
+  sel.dataset.pillsBound = '1';
+  const sync = (value, fireChange) => {
+    pills.forEach(p => p.classList.toggle('is-active', p.dataset.platform === value));
+    if (sel.value !== value) {
+      sel.value = value;
+      if (fireChange) sel.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+  };
+  pills.forEach(p => {
+    if (p.dataset.platform === sel.value) p.classList.add('is-active');
+    p.addEventListener('click', () => sync(p.dataset.platform, true));
+  });
+}
+
+function bindTonePills() {
+  const sel = document.getElementById('rewriteTone');
+  const pills = document.querySelectorAll('#tone-pills .tone-pill');
+  if (!sel || !pills.length || sel.dataset.toneBound) return;
+  sel.dataset.toneBound = '1';
+  const sync = (value, fireChange) => {
+    pills.forEach(p => p.classList.toggle('is-active', p.dataset.tone === value));
+    if (sel.value !== value) {
+      sel.value = value;
+      if (fireChange) sel.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+  };
+  pills.forEach(p => {
+    if (p.dataset.tone === sel.value) p.classList.add('is-active');
+    p.addEventListener('click', () => sync(p.dataset.tone, true));
+  });
+}
+
+function bindCopyButtons() {
+  document.querySelectorAll('[data-copy-target]').forEach(btn => {
+    if (btn.dataset.bound) return;
+    btn.dataset.bound = '1';
+    btn.addEventListener('click', async () => {
+      const el = document.getElementById(btn.dataset.copyTarget);
+      const value = (el?.value || '').trim();
+      if (!value) { toast('内容为空', 'error'); return; }
+      try {
+        await navigator.clipboard.writeText(value);
+        toast('已复制', 'success');
+      } catch {
+        toast('复制失败', 'error');
+      }
+    });
+  });
 }
 
 export async function exportToKb() {
