@@ -133,10 +133,16 @@ export function toggleCreatorTool(_, d) {
   if (!key) return;
   const panel = document.getElementById(`${key}-panel`);
   const chevron = document.getElementById(`${key}-chevron`);
+  const row = document.getElementById('creator-tools-row');
   if (!panel) return;
   const willOpen = panel.classList.contains('hidden');
   panel.classList.toggle('hidden');
   if (chevron) chevron.style.transform = willOpen ? 'rotate(180deg)' : '';
+  if (row) {
+    const anyOpen = row.querySelectorAll('.creator-tool-open, #forbidden-panel:not(.hidden), #cover-panel:not(.hidden)').length > 0;
+    const stillOpen = row.querySelectorAll(':scope > div:not(.hidden)').length > 0;
+    row.classList.toggle('hidden', !stillOpen);
+  }
 }
 
 export function sendToCreator(item) {
