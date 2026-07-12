@@ -8,11 +8,10 @@ import { initIcons } from '../icons.js';
 
 let rewriteHotspots = [];
 let selectedRewriteHotspot = null;
-let currentCreatorMode = 'create';  // create / rewrite / adapt
+let currentCreatorMode = 'create';  // create / rewrite
 const MODE_META = {
   create:  { label: '开始创作', hint: '创作模式：基于主题/大纲从零写，可适当发挥但遵守事实底线' },
-  rewrite: { label: '开始重构', hint: '重构模式：在原素材基础上扩展结构和打磨，保留事实' },
-  adapt:   { label: '开始改写', hint: '改写模式：直接换风格，不补充新事实，仅风格转换、句式重组' },
+  rewrite: { label: '开始改写', hint: '改写模式：在原素材基础上打磨、扩展结构或换风格，保留事实' },
 };
 
 function bindPlatformSkillBadge() {
@@ -67,9 +66,7 @@ function bindCreatorModeTabs() {
       if (ph) {
         ph.placeholder = mode === 'create'
           ? '输入主题/大纲/关键词，AI 会基于此创作全新内容...'
-          : mode === 'adapt'
-            ? '粘贴要换风格的原文，AI 直接改写不补充事实...'
-            : '粘贴一段爆款文案，或输入一个选题关键词...';
+          : '粘贴一段爆款文案，或输入一个选题关键词...';
       }
     });
   });
@@ -257,8 +254,10 @@ export async function openActionLogs() {
 
 export function renderRewriteHotspots(keywords = []) {
   const panel = document.getElementById('rewriteHotspotPanel');
+  const wrap = document.getElementById('rewriteHotspotWrap');
   if (!panel) return;
   panel.classList.remove('hidden');
+  if (wrap) wrap.classList.add('is-open');
   document.getElementById('rewriteKeywords').innerHTML = keywords.map(keyword => `<span class="tag">${esc(keyword)}</span>`).join('');
   document.getElementById('rewriteHotspotList').innerHTML = rewriteHotspots.length
     ? rewriteHotspots.map((hotspot, index) => {

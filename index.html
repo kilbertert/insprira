@@ -654,8 +654,7 @@
           <h3 class="text-sm font-semibold flex items-center gap-1.5"><i data-lucide="hammer" class="w-3.5 h-3.5 text-amber-400"></i>输入素材</h3>
           <div class="inline-flex rounded-md bg-white/[0.03] p-0.5" id="creator-mode-tabs">
             <button class="px-3 py-1 text-xs rounded-md transition creator-mode-tab bg-amber-500/20 text-amber-300" data-mode="create" title="从零创作（可适当发挥，但遵守事实底线）">创作</button>
-            <button class="px-3 py-1 text-xs rounded-md transition creator-mode-tab text-gray-400 hover:text-gray-200" data-mode="rewrite" title="基于素材扩展结构和打磨">重构</button>
-            <button class="px-3 py-1 text-xs rounded-md transition creator-mode-tab text-gray-400 hover:text-gray-200" data-mode="adapt" title="直接换风格，不补充新事实">改写</button>
+            <button class="px-3 py-1 text-xs rounded-md transition creator-mode-tab text-gray-400 hover:text-gray-200" data-mode="rewrite" title="在原素材基础上打磨、扩展结构或换风格">改写</button>
           </div>
         </div>
         <textarea class="input w-full flex-1 resize-none min-h-0 text-sm leading-relaxed" id="creatorInput" placeholder="输入主题/大纲/关键词，AI 会基于此创作全新内容..."></textarea>
@@ -706,21 +705,23 @@
           <select class="input py-1 px-2 text-xs" id="rewriteStyleProfile" style="width:auto" title="使用「我的」账号提炼的风格档案">
             <option value="">（不使用风格档案）</option>
           </select>
-          <div class="ml-auto flex items-center gap-1">
+          <div class="ml-auto flex items-center gap-1 min-h-[28px]">
             <span id="rewrite-skill-badge" class="pill pill-gray !text-[10px] !py-0.5 !px-1.5 hidden"></span>
             <button class="btn btn-ghost py-1 px-2 text-xs" id="hotspotAnalyzeBtn" data-action="analyzeRewriteHotspots"><i data-lucide="trending-up" class="w-3.5 h-3.5"></i>分析热点</button>
             <button class="btn btn-ghost py-1 px-2 text-xs" data-action="openActionLogs"><i data-lucide="scroll-text" class="w-3.5 h-3.5"></i>日志</button>
           </div>
         </div>
 
-        <div id="rewriteHotspotPanel" class="hidden mb-4 rounded-lg border border-white/10 bg-black/20 p-3">
-          <div class="flex items-center justify-between mb-2">
-            <div class="text-xs font-semibold">相关实时热点</div>
-            <button class="text-[11px] text-gray-500 hover:text-gray-300" data-action="clearSelectedHotspot">不蹭热点</button>
+        <div id="rewriteHotspotWrap" class="hotspot-collapse">
+          <div id="rewriteHotspotPanel" class="hidden rounded-lg border border-white/10 bg-black/20 p-3">
+            <div class="flex items-center justify-between mb-2">
+              <div class="text-xs font-semibold">相关实时热点</div>
+              <button class="text-[11px] text-gray-500 hover:text-gray-300" data-action="clearSelectedHotspot">不蹭热点</button>
+            </div>
+            <div id="rewriteKeywords" class="flex flex-wrap gap-1.5 mb-3"></div>
+            <div id="rewriteHotspotSource" class="text-[11px] text-gray-500 mb-2"></div>
+            <div id="rewriteHotspotList" class="space-y-2"></div>
           </div>
-          <div id="rewriteKeywords" class="flex flex-wrap gap-1.5 mb-3"></div>
-          <div id="rewriteHotspotSource" class="text-[11px] text-gray-500 mb-2"></div>
-          <div id="rewriteHotspotList" class="space-y-2"></div>
         </div>
 
         <div class="space-y-3 flex-1 flex flex-col">
