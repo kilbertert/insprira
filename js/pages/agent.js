@@ -100,23 +100,10 @@ export async function bindSkillToSource(el, d) {
   } catch (e) { toast(e.message, 'error'); }
 }
 
-export async function classifySkills() {
-  if (!confirm('将调用 LLM 给所有 skill 自动分类（耗时约 30-90 秒），确认开始？')) return;
-  toast('正在用 LLM 分类所有 skill…', 'info');
-  try {
-    const result = await localApi('skills/classify', { method: 'POST' });
-    toast(`分类完成：${result.done}/${result.total} 成功${result.failed ? `，失败 ${result.failed}` : ''}`, 'success');
-    await loadSkills(true);
-    filterSkills();
-  } catch (e) { toast(e.message, 'error'); }
-}
-
-export async function forceReclassifySkills() {
-  if (!confirm('强制重新分析所有 skill（忽略缓存签名），耗时约 1-3 分钟，确认开始？')) return;
-  toast('正在强制重新分类所有 skill…', 'info');
+export async function reclassifySkills() {
   try {
     const result = await localApi('skills/classify?force=1', { method: 'POST' });
-    toast(`强制重分类完成：${result.done}/${result.total} 成功`, 'success');
+    toast(`已重整 ${result.done}/${result.total} 个 skill 分类（slug 规则 · 毫秒级）`, 'success');
     await loadSkills(true);
     filterSkills();
   } catch (e) { toast(e.message, 'error'); }
