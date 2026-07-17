@@ -1,6 +1,6 @@
 # ===== Stage 1: builder =====
 # 装编译工具链，编 better-sqlite3 等 native binding，编完丢弃
-FROM node:22-slim AS builder
+FROM node:24-slim AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
@@ -20,8 +20,11 @@ RUN npm ci --only=production && \
 
 # ===== Stage 2: runtime =====
 # 只留运行时依赖（python + git），不带编译器，也不内置 Agent CLI
-# Agent 改走 sbx / Daytona / 本地 spawn 三选一，见 lib/agent.js 的 adapter 接口
-FROM node:22-slim AS runtime
+# Agent 走三选一：
+#   · 本地映射（docker-compose.local-agents.yaml 挂宿主 ~/.npm-global 等）
+#   · sbx microVM（AGENT_ADAPTER=sbx + 装 sbx CLI）
+#   · 容器内装（Dockerfile 末尾加 npm i -g ...）
+FROM node:24-slim AS runtime
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
@@ -29,6 +32,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     git \
     unzip \
+    libstdc++6 \
   && pip3 install --no-cache-dir --break-system-packages requests \
   && rm -rf /var/lib/apt/lists/* \
   && rm -rf /usr/share/man /usr/share/doc /usr/share/locale
